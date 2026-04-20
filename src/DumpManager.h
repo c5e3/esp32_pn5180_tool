@@ -13,7 +13,8 @@ public:
     String loadDump(const char *name);
     bool deleteDump(const char *name);
     bool renameDump(const char *oldName, const char *newName);
-    String listDumps(); // Returns JSON array: ["name1","name2",...]
+    String listDumps(); // Returns JSON array: [{"name":"x","size":123},...]
+    size_t usedBytes();  // Sum of all file sizes in /dumps
 
     // Conversion helpers
     static String tagToJson(ISO15693TagInfo *info, uint8_t *data);

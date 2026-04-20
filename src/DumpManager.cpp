@@ -9,7 +9,7 @@ bool DumpManager::begin() {
 }
 
 String DumpManager::dumpPath(const char *name) {
-    return String("/dumps/") + name + ".json";
+    return String("/dumps/") + name;
 }
 
 bool DumpManager::saveDump(const char *name, const String &json) {
@@ -57,12 +57,15 @@ String DumpManager::listDumps() {
     File f = root.openNextFile();
     while (f) {
         String fname = f.name();
-        // Strip path prefix and .json extension
+        size_t fsize = f.size();
+        // Strip path prefix
         int lastSlash = fname.lastIndexOf('/');
         if (lastSlash >= 0) fname = fname.substring(lastSlash + 1);
-        if (fname.endsWith(".json")) {
-            fname = fname.substring(0, fname.length() - 5);
-            arr.add(fname);
+        // Skip hidden/init files
+        if (fname.length() > 0 && fname.charAt(0) != '.') {
+            JsonObject obj = arr.createNestedObject();
+            obj["name"] = fname;
+            obj["size"] = fsize;
         }
         f = root.openNextFile();
     }
@@ -70,6 +73,23 @@ String DumpManager::listDumps() {
     String result;
     serializeJson(doc, result);
     return result;
+}
+
+size_t DumpManager::usedBytes() {
+    size_t total = 0;
+    File root = SPIFFS.open("/dumps");
+    if (!root || !root.isDirectory()) return 0;
+    File f = root.openNextFile();
+    while (f) {
+        String fname = f.name();
+        int lastSlash = fname.lastIndexOf('/');
+        if (lastSlash >= 0) fname = fname.substring(lastSlash + 1);
+        if (fname.length() > 0 && fname.charAt(0) != '.') {
+            total += f.size();
+        }
+        f = root.openNextFile();
+    }
+    return total;
 }
 
 // ============================================================

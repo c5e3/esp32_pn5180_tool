@@ -47,7 +47,8 @@ input[type="radio"]{accent-color:#00d4ff}
 .dump-list{max-height:200px;overflow-y:auto}
 .dump-item{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#0f0f1a;border-radius:5px;margin-bottom:4px}
 .dump-name{font-family:'Consolas',monospace;font-size:0.9em;color:#00d4ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
-.status-bar{position:fixed;top:0;left:0;right:0;background:#1a1a2e;border-bottom:1px solid #2a2a4a;padding:6px 16px;display:flex;justify-content:space-between;align-items:center;z-index:100;font-size:0.8em}
+.status-bar{position:fixed;top:0;left:0;right:0;background:#1a1a2e;border-bottom:1px solid #2a2a4a;padding:4px 16px 3px;display:flex;flex-direction:column;gap:3px;z-index:100;font-size:0.8em}
+.status-bar-row{display:flex;align-items:center;width:100%}
 .status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:5px}
 .status-dot.ok{background:#00cc66}
 .status-dot.busy{background:#ffaa00;animation:pulse 0.8s infinite}
@@ -55,7 +56,7 @@ input[type="radio"]{accent-color:#00d4ff}
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 24px;border-radius:8px;font-size:0.9em;display:none;z-index:200;max-width:90%}
 .toast-ok{background:#00663a;color:#fff}
 .toast-err{background:#992222;color:#fff}
-.spacer{height:36px}
+.spacer{height:52px}
 /* Tabs */
 .tabs{display:flex;gap:0;margin-bottom:14px;border-bottom:2px solid #2a2a4a}
 .tab-btn{flex:1;padding:10px 0;text-align:center;font-size:1em;font-weight:600;color:#666;background:transparent;border:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all 0.2s}
@@ -84,8 +85,19 @@ input[type="radio"]{accent-color:#00d4ff}
 <body>
 
 <div class="status-bar">
-  <div><span class="status-dot ok" id="statusDot"></span><span id="statusText">Ready</span></div>
-  <div style="color:#666" id="ipDisplay"></div>
+  <div class="status-bar-row">
+    <div style="white-space:nowrap;flex-shrink:0"><span class="status-dot ok" id="statusDot"></span><span id="statusText">Ready</span></div>
+    <span style="color:#333;flex-shrink:0;margin:0 6px">&middot;</span>
+    <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0">
+      <span style="color:#555;white-space:nowrap;flex-shrink:0">💾</span>
+      <div style="flex:1;background:#0f0f1a;border-radius:2px;height:4px;overflow:hidden;min-width:0">
+        <div id="spiffsBarFill" style="height:100%;background:#00994d;width:0%;transition:width 0.5s"></div>
+      </div>
+      <span id="spiffsBarText" style="color:#666;white-space:nowrap;flex-shrink:0">-</span>
+    </div>
+    <span style="color:#333;flex-shrink:0;margin:0 6px">&middot;</span>
+    <div style="color:#666;white-space:nowrap;flex-shrink:0" id="ipDisplay"></div>
+  </div>
 </div>
 <div class="spacer"></div>
 
@@ -140,6 +152,7 @@ input[type="radio"]{accent-color:#00d4ff}
       <label>Name:</label>
       <input type="text" id="saveDumpName" placeholder="my_tag" style="flex:1">
       <button class="btn btn-success btn-sm" onclick="doSave()">Save</button>
+      <button class="btn btn-primary btn-sm" onclick="doDownloadCurrent()">Download</button>
     </div>
   </div>
 
@@ -148,11 +161,15 @@ input[type="radio"]{accent-color:#00d4ff}
 <!-- ==================== WRITE TAB ==================== -->
 <div id="tab-write" class="tab-content">
 
-  <!-- Dump Management -->
+  <!-- File Manager -->
   <div class="card">
-    <h2>Dump Management</h2>
+    <h2>File Manager</h2>
     <div class="dump-list" id="dumpList">
-      <div style="color:#666;text-align:center;padding:10px">No dumps saved yet.</div>
+      <div style="color:#666;text-align:center;padding:10px">No files saved yet.</div>
+    </div>
+    <div style="margin-top:8px">
+      <input type="file" id="uploadFileInput" style="display:none" onchange="doUpload(this)">
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('uploadFileInput').click()">Upload File</button>
     </div>
   </div>
 
@@ -161,7 +178,7 @@ input[type="radio"]{accent-color:#00d4ff}
     <h2>Tag Info</h2>
     <div class="form-row">
       <label>UID:</label>
-      <input type="text" id="writeUid" class="uid-input" maxlength="16" placeholder="E007A3F2B1C84D5E" value="">
+      <input type="text" id="writeUid" class="uid-input" maxlength="16" value="">
     </div>
     <div class="info-grid">
       <div class="info-item">Blocks: <span id="writeInfoBlocks">-</span></div>
@@ -207,11 +224,11 @@ input[type="radio"]{accent-color:#00d4ff}
 <!-- ==================== EMULATE TAB ==================== -->
 <div id="tab-emulate" class="tab-content">
 
-  <!-- Dump Management -->
+  <!-- File Manager -->
   <div class="card">
-    <h2>Dump Management</h2>
+    <h2>File Manager</h2>
     <div class="dump-list" id="emuDumpList">
-      <div style="color:#666;text-align:center;padding:10px">No dumps saved yet.</div>
+      <div style="color:#666;text-align:center;padding:10px">No files saved yet.</div>
     </div>
   </div>
 
@@ -278,9 +295,9 @@ input[type="radio"]{accent-color:#00d4ff}
 <!-- Rename Modal -->
 <div class="modal-overlay" id="renameModal">
   <div class="modal">
-    <h3>Rename Dump</h3>
+    <h3>Rename File</h3>
     <div class="form-row" style="justify-content:center;margin-bottom:16px">
-      <input type="text" id="renameInput" placeholder="new_name" style="width:200px">
+      <input type="text" id="renameInput" placeholder="new_name.json" style="width:220px">
     </div>
     <input type="hidden" id="renameOldName">
     <div class="btn-group">
@@ -537,10 +554,11 @@ async function executeWrite() {
 }
 
 async function doSave() {
-  const name = document.getElementById('saveDumpName').value.trim();
-  if (!name) { toast('Enter a dump name', false); return; }
-  if (!/^[a-zA-Z0-9_\-]+$/.test(name)) { toast('Name: letters, numbers, _ - only', false); return; }
+  const stem = document.getElementById('saveDumpName').value.trim();
+  if (!stem) { toast('Enter a dump name', false); return; }
+  if (!/^[a-zA-Z0-9_\-]+$/.test(stem)) { toast('Name: letters, numbers, _ - only', false); return; }
   if (!tagData.blocks.length) { toast('No data to save', false); return; }
+  const name = stem + '.json';
   const dump = {
     type: 'ISO15693',
     uid: tagData.uid,
@@ -552,10 +570,10 @@ async function doSave() {
     data: blocksToDataHex()
   };
   const r = await api('POST', '/api/dump?name=' + encodeURIComponent(name), dump);
-  if (r) toast('Saved: ' + name, true);
+  if (r) { toast('Saved: ' + name, true); refreshSpiffs(); }
 }
 
-// ========== Dump Management ==========
+// ========== File Manager ==========
 
 async function loadDumpList() {
   const r = await api('GET', '/api/dumps');
@@ -563,15 +581,20 @@ async function loadDumpList() {
   const list = r.dumps || [];
   const el = document.getElementById('dumpList');
   if (!list.length) {
-    el.innerHTML = '<div style="color:#666;text-align:center;padding:10px">No dumps saved yet.</div>';
+    el.innerHTML = '<div style="color:#666;text-align:center;padding:10px">No files saved yet.</div>';
     return;
   }
   let html = '';
-  for (const name of list) {
+  for (const f of list) {
+    const name = f.name;
+    const sizeStr = formatSize(f.size);
+    const isJson = name.toLowerCase().endsWith('.json');
     html += '<div class="dump-item">' +
       '<span class="dump-name" title="' + name + '">' + name + '</span>' +
-      '<div style="display:flex;gap:4px">' +
-      '<button class="btn btn-primary btn-sm" onclick="doLoad(\''+name+'\')">Load</button>' +
+      '<span style="font-size:0.75em;color:#555;margin-left:6px;white-space:nowrap">' + sizeStr + '</span>' +
+      '<div style="display:flex;gap:4px;margin-left:auto">' +
+      (isJson ? '<button class="btn btn-primary btn-sm" onclick="doLoad(\''+name+'\')">Load</button>' : '') +
+      '<button class="btn btn-success btn-sm" onclick="doDownload(\''+name+'\')">Download</button>' +
       '<button class="btn btn-warning btn-sm" onclick="openRename(\''+name+'\')">Rename</button>' +
       '<button class="btn btn-danger btn-sm" onclick="doDelete(\''+name+'\')">Delete</button>' +
       '</div></div>';
@@ -596,9 +619,9 @@ async function doLoad(name) {
 }
 
 async function doDelete(name) {
-  if (!confirm('Delete dump "' + name + '"?')) return;
+  if (!confirm('Delete "' + name + '"?')) return;
   const r = await api('DELETE', '/api/dump?name=' + encodeURIComponent(name));
-  if (r) { toast('Deleted: ' + name, true); loadDumpList(); }
+  if (r) { toast('Deleted: ' + name, true); loadDumpList(); refreshSpiffs(); }
 }
 
 function openRename(name) {
@@ -616,7 +639,7 @@ async function confirmRename() {
   const oldName = document.getElementById('renameOldName').value;
   const newName = document.getElementById('renameInput').value.trim();
   if (!newName) { toast('Enter a name', false); return; }
-  if (!/^[a-zA-Z0-9_\-]+$/.test(newName)) { toast('Name: letters, numbers, _ - only', false); return; }
+  if (!/^[a-zA-Z0-9_][a-zA-Z0-9_\-\.]*$/.test(newName)) { toast('Name: letters, numbers, _ - . only; no leading dot', false); return; }
   closeRename();
   const r = await api('POST', '/api/dump/rename', {oldName, newName});
   if (r) { toast('Renamed to: ' + newName, true); loadDumpList(); }
@@ -644,15 +667,20 @@ async function loadEmuDumpList() {
   const list = r.dumps || [];
   const el = document.getElementById('emuDumpList');
   if (!list.length) {
-    el.innerHTML = '<div style="color:#666;text-align:center;padding:10px">No dumps saved yet.</div>';
+    el.innerHTML = '<div style="color:#666;text-align:center;padding:10px">No files saved yet.</div>';
     return;
   }
   let html = '';
-  for (const name of list) {
+  for (const f of list) {
+    const name = f.name;
+    const sizeStr = formatSize(f.size);
+    const isJson = name.toLowerCase().endsWith('.json');
     html += '<div class="dump-item">' +
       '<span class="dump-name" title="' + name + '">' + name + '</span>' +
-      '<div style="display:flex;gap:4px">' +
-      '<button class="btn btn-primary btn-sm" onclick="doEmuLoad(\''+name+'\')">Load</button>' +
+      '<span style="font-size:0.75em;color:#555;margin-left:6px;white-space:nowrap">' + sizeStr + '</span>' +
+      '<div style="display:flex;gap:4px;margin-left:auto">' +
+      (isJson ? '<button class="btn btn-primary btn-sm" onclick="doEmuLoad(\''+name+'\')">Load</button>' : '') +
+      '<button class="btn btn-success btn-sm" onclick="doDownload(\''+name+'\')">Download</button>' +
       '</div></div>';
   }
   el.innerHTML = html;
@@ -727,9 +755,101 @@ async function pollEmuStatus() {
   } catch(e) {}
 }
 
+// ========== Download ==========
+
+function downloadJson(filename, jsonStr) {
+  const blob = new Blob([jsonStr], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function doDownload(name) {
+  if (busy) return;
+  try {
+    const r = await fetch('/api/rawfile?name=' + encodeURIComponent(name));
+    if (!r.ok) { toast('Download failed', false); return; }
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch(e) {
+    toast('Download error: ' + e.message, false);
+  }
+}
+
+function doDownloadCurrent() {
+  if (!tagData.blocks.length) { toast('No data to download', false); return; }
+  const dump = {
+    type: 'ISO15693',
+    uid: tagData.uid,
+    dsfid: tagData.dsfid,
+    afi: tagData.afi,
+    icRef: tagData.icRef,
+    blockSize: tagData.blockSize,
+    blockCount: tagData.blocks.length,
+    data: blocksToDataHex()
+  };
+  const filename = tagData.uid || 'tag';
+  downloadJson(filename, JSON.stringify(dump, null, 2));
+}
+
+// ========== Upload ==========
+
+async function doUpload(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  const name = file.name;
+  if (!/^[a-zA-Z0-9_][a-zA-Z0-9_\-\.]*$/.test(name)) { toast('Invalid filename', false); return; }
+  setBusy(true, 'Uploading...');
+  try {
+    const fd = new FormData();
+    fd.append('file', file, name);
+    const r = await fetch('/api/upload?name=' + encodeURIComponent(name), {method:'POST', body:fd});
+    const j = await r.json();
+    if (j.status !== 'ok') { toast(j.message || 'Upload failed', false); return; }
+    toast('Uploaded: ' + name, true);
+    await loadDumpList();
+    await loadEmuDumpList();
+    refreshSpiffs();
+  } catch(e) {
+    toast('Upload error: ' + e.message, false);
+  } finally {
+    setBusy(false);
+  }
+}
+
+// ========== SPIFFS Bar ==========
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  return (bytes / 1024).toFixed(1) + ' KB';
+}
+
+async function refreshSpiffs() {
+  try {
+    const r = await fetch('/api/spiffs');
+    const j = await r.json();
+    if (j.status !== 'ok') return;
+    const pct = j.total > 0 ? Math.round(j.used / j.total * 100) : 0;
+    const usedKb = (j.used / 1024).toFixed(1);
+    const totalKb = Math.round(j.total / 1024);
+    const fill = document.getElementById('spiffsBarFill');
+    fill.style.width = pct + '%';
+    fill.style.background = pct > 85 ? '#cc3333' : '#00994d';
+    document.getElementById('spiffsBarText').textContent = usedKb + ' / ' + totalKb + ' KB (' + pct + '%)';
+  } catch(e) {}
+}
+
 // ========== Init ==========
 window.addEventListener('load', () => {
   document.getElementById('ipDisplay').textContent = location.host;
+  refreshSpiffs();
 });
 </script>
 </body>

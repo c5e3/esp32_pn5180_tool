@@ -170,6 +170,82 @@ void handleListDumps() {
         "{\"status\":\"ok\",\"dumps\":" + list + "}");
 }
 
+// ============================================================
+// Chunked file upload — POST /api/upload?name=xxx
+// Uses the WebServer upload callback so the body is never
+// buffered in RAM; each chunk is written directly to SPIFFS.
+// ============================================================
+
+static File uploadFileHandle;
+static bool uploadOk = false;
+
+static bool isValidFilename(const String &name) {
+    if (name.length() == 0 || name.charAt(0) == '.') return false;
+    for (unsigned int i = 0; i < name.length(); i++) {
+        char c = name.charAt(i);
+        if (!isalnum(c) && c != '_' && c != '-' && c != '.') return false;
+    }
+    return true;
+}
+
+void handleUploadChunk() {
+    HTTPUpload &upload = server.upload();
+
+    if (upload.status == UPLOAD_FILE_START) {
+        uploadOk = false;
+        String name = server.hasArg("name") ? server.arg("name") : String(upload.filename.c_str());
+        if (!isValidFilename(name)) {
+            Serial.println("Upload: invalid filename");
+            return;
+        }
+        String path = "/dumps/" + name;
+        Serial.println("Upload start: " + path);
+        uploadFileHandle = SPIFFS.open(path, FILE_WRITE);
+        if (!uploadFileHandle) {
+            Serial.println("Upload: failed to open file");
+            return;
+        }
+        uploadOk = true;
+
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (uploadFileHandle) {
+            size_t written = uploadFileHandle.write(upload.buf, upload.currentSize);
+            if (written != upload.currentSize) {
+                Serial.println("Upload: write error (storage full?)");
+                uploadFileHandle.close();
+                String name = server.hasArg("name") ? server.arg("name") : String(upload.filename.c_str());
+                SPIFFS.remove("/dumps/" + name);
+                uploadFileHandle = File(); // invalidate
+                uploadOk = false;
+            }
+        }
+
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (uploadFileHandle) {
+            uploadFileHandle.close();
+            Serial.println("Upload done: " + String(upload.totalSize) + " bytes");
+        }
+
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        if (uploadFileHandle) {
+            String name = server.hasArg("name") ? server.arg("name") : String(upload.filename.c_str());
+            uploadFileHandle.close();
+            SPIFFS.remove("/dumps/" + name);
+            Serial.println("Upload aborted");
+        }
+        uploadOk = false;
+    }
+}
+
+void handleUploadDone() {
+    if (!uploadOk) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"Upload failed — storage may be full\"}");
+        return;
+    }
+    server.send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
 // GET /api/dump?name=xxx — get specific dump
 void handleGetDump() {
     if (!server.hasArg("name")) {
@@ -197,10 +273,15 @@ void handleSaveDump() {
     }
     String name = server.arg("name");
 
-    // Validate name: alphanumeric, underscore, dash only
+    // Validate name: alphanumeric, underscore, dash, dot; must not start with dot
+    if (name.length() == 0 || name.charAt(0) == '.') {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"Invalid name\"}");
+        return;
+    }
     for (unsigned int i = 0; i < name.length(); i++) {
         char c = name.charAt(i);
-        if (!isalnum(c) && c != '_' && c != '-') {
+        if (!isalnum(c) && c != '_' && c != '-' && c != '.') {
             server.send(200, "application/json",
                 "{\"status\":\"error\",\"message\":\"Invalid name\"}");
             return;
@@ -248,9 +329,14 @@ void handleRenameDump() {
     }
     // Validate new name
     String nn(newName);
+    if (nn.length() == 0 || nn.charAt(0) == '.') {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"Invalid name\"}");
+        return;
+    }
     for (unsigned int i = 0; i < nn.length(); i++) {
         char c = nn.charAt(i);
-        if (!isalnum(c) && c != '_' && c != '-') {
+        if (!isalnum(c) && c != '_' && c != '-' && c != '.') {
             server.send(200, "application/json",
                 "{\"status\":\"error\",\"message\":\"Invalid name\"}");
             return;
@@ -327,6 +413,34 @@ void handleEmulateStatus() {
     server.send(200, "application/json", json);
 }
 
+// GET /api/spiffs — filesystem usage
+void handleSpiffsInfo() {
+    size_t total = SPIFFS.totalBytes();
+    size_t used  = dumps.usedBytes();   // sum of actual file sizes (SPIFFS.usedBytes() is unreliable on ESP32)
+    String json = "{\"status\":\"ok\",\"used\":" + String(used)
+                + ",\"total\":" + String(total) + "}";
+    server.send(200, "application/json", json);
+}
+
+// GET /api/rawfile?name=xxx — serve raw file content for download
+void handleRawFile() {
+    if (!server.hasArg("name")) {
+        server.send(400, "text/plain", "Missing name");
+        return;
+    }
+    String name = server.arg("name");
+    String content = dumps.loadDump(name.c_str());
+    if (content.isEmpty()) {
+        server.send(404, "text/plain", "Not found");
+        return;
+    }
+    String ct = "application/octet-stream";
+    if (name.endsWith(".json") || name.endsWith(".JSON")) ct = "application/json";
+    else if (name.endsWith(".txt")  || name.endsWith(".TXT"))  ct = "text/plain";
+    server.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
+    server.send(200, ct, content);
+}
+
 // ============================================================
 // Setup & Loop
 // ============================================================
@@ -388,6 +502,9 @@ void setup() {
     server.on("/api/emulate/start", HTTP_POST, handleEmulateStart);
     server.on("/api/emulate/stop", HTTP_POST, handleEmulateStop);
     server.on("/api/emulate/status", HTTP_GET, handleEmulateStatus);
+    server.on("/api/spiffs", HTTP_GET, handleSpiffsInfo);
+    server.on("/api/rawfile", HTTP_GET, handleRawFile);
+    server.on("/api/upload", HTTP_POST, handleUploadDone, handleUploadChunk);
     server.onNotFound([]() {
         server.send(404, "text/plain", "Not found");
     });
