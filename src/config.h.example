@@ -1,0 +1,32 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// WiFi mode: "AP" = access point, "STA" = connect to existing network
+#define CFG_WIFI_AP   0
+#define CFG_WIFI_STA  1
+#define CFG_WIFI_MODE CFG_WIFI_STA
+
+// Access Point settings (used when WIFI_MODE == WIFI_MODE_AP)
+#define AP_SSID "NFC-Tool"
+#define AP_PASS "nfc12345"
+
+// Station / client settings (used when WIFI_MODE == WIFI_MODE_STA)
+#define STA_SSID "SSID"
+#define STA_PASS "PASSWORD"
+#define STA_CONNECT_TIMEOUT 15000  // ms to wait for connection
+
+// PN5180 pin configuration (ESP32 VSPI)
+// SPI: MOSI=23, MISO=19, SCK=18 (default VSPI, handled by SPI library)
+#define PN5180_NSS   5
+#define PN5180_BUSY  16
+#define PN5180_RST   17
+
+// SPI clock speed (PN5180 supports up to 7 MHz)
+#define PN5180_SPI_CLOCK 1000000
+
+// ISO 15693 limits
+#define ISO15693_MAX_BLOCKS     256
+#define ISO15693_MAX_BLOCK_SIZE 32
+#define ISO15693_MAX_DATA_SIZE  (ISO15693_MAX_BLOCKS * ISO15693_MAX_BLOCK_SIZE)
+
+#endif
