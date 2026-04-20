@@ -354,7 +354,7 @@ void handleRenameDump() {
 // Emulation API Handlers
 // ============================================================
 
-// POST /api/emulate/start — body = {name: "dumpName"}
+// POST /api/emulate/start — body = {uid, dsfid, afi, icRef, blockSize, blockCount, data}
 void handleEmulateStart() {
     if (nfc.emuState.active) {
         server.send(200, "application/json",
@@ -366,28 +366,40 @@ void handleEmulateStart() {
             "{\"status\":\"error\",\"message\":\"No body\"}");
         return;
     }
-    StaticJsonDocument<256> doc;
-    deserializeJson(doc, server.arg("plain"));
-    const char *name = doc["name"];
-    if (!name) {
+    StaticJsonDocument<4096> doc;
+    DeserializationError err = deserializeJson(doc, server.arg("plain"));
+    if (err) {
         server.send(200, "application/json",
-            "{\"status\":\"error\",\"message\":\"Missing dump name\"}");
+            "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
         return;
     }
 
-    // Load dump from SPIFFS
-    String json = dumps.loadDump(name);
-    if (json.isEmpty()) {
-        server.send(200, "application/json",
-            "{\"status\":\"error\",\"message\":\"Dump not found\"}");
-        return;
-    }
-
+    const char *uidStr = doc["uid"];
     memset(&emuTagInfo, 0, sizeof(emuTagInfo));
-    memset(emuDataBuffer, 0, sizeof(emuDataBuffer));
-    if (!DumpManager::jsonToTag(json, &emuTagInfo, emuDataBuffer, sizeof(emuDataBuffer))) {
+    if (!uidStr || !DumpManager::hexToUid(String(uidStr), emuTagInfo.uid)) {
         server.send(200, "application/json",
-            "{\"status\":\"error\",\"message\":\"Invalid dump data\"}");
+            "{\"status\":\"error\",\"message\":\"Invalid UID\"}");
+        return;
+    }
+
+    emuTagInfo.blockSize  = doc["blockSize"]  | 4;
+    emuTagInfo.blockCount = doc["blockCount"] | 0;
+    emuTagInfo.dsfid  = (uint8_t)strtoul(doc["dsfid"]  | "00", nullptr, 16);
+    emuTagInfo.afi    = (uint8_t)strtoul(doc["afi"]    | "00", nullptr, 16);
+    emuTagInfo.icRef  = (uint8_t)strtoul(doc["icRef"]  | "00", nullptr, 16);
+    emuTagInfo.valid  = true;
+
+    const char *dataStr = doc["data"];
+    if (!dataStr || emuTagInfo.blockCount == 0) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"No block data\"}");
+        return;
+    }
+
+    memset(emuDataBuffer, 0, sizeof(emuDataBuffer));
+    if (!DumpManager::hexToBytes(String(dataStr), emuDataBuffer, sizeof(emuDataBuffer))) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"Invalid block data\"}");
         return;
     }
 

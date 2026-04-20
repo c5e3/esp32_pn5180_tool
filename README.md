@@ -39,9 +39,14 @@ Configurable in `src/config.h` (`PN5180_NSS`, `PN5180_BUSY`, `PN5180_RST`).
 - **Read tag** — inventory, Get System Info, read all blocks
 - **Write tag** — write all blocks to a compatible tag (with 3× retry per block)
 - **Magic card UID set** — Gen1 (v1) and Gen2 (v2) magic card support
-- **Tag emulation** — emulate a saved ISO 15693 dump (responds to INVENTORY, READ SINGLE BLOCK, GET SYSTEM INFO)
-- **Dump management** — save, load, rename, delete named dumps stored in SPIFFS
-- **Web UI** — single-page app served from the ESP32 itself
+- **Tag emulation** — emulate an ISO 15693 dump; UID and block data are editable before starting
+- **File Manager** — save, load, rename, delete, upload, and download files stored in SPIFFS; any file type is supported
+- **Chunked file upload** — large files uploaded via multipart streaming directly to SPIFFS (tested up to 500 KB); SPIFFS-full errors are detected and reported
+- **Web UI** — single-page app served from the ESP32 itself; status bar shows connection state and live SPIFFS usage
+
+### Data model
+
+One dump is held in memory at a time. Loading or reading a tag in any tab updates all three tabs (Read / Write / Emulate) simultaneously — no reload required when switching tabs.
 
 ### WiFi Modes
 
@@ -81,14 +86,14 @@ pio run --target upload
 
 ### Build & Upload Filesystem Image (SPIFFS)
 
-The web UI (`src/web_ui.h`) is compiled into the firmware, so the SPIFFS filesystem is only used for storing dumps.  
+The web UI (`src/web_ui.h`) is compiled into the firmware, so the SPIFFS filesystem is only used for storing files.  
 You still need to create an empty filesystem on first flash:
 
 ```sh
 pio run --target uploadfs
 ```
 
-> If you skip this step, SPIFFS will fail to mount and dump save/load will not work.
+> If you skip this step, SPIFFS will fail to mount and file save/load will not work.
 
 ### Monitor Serial Output
 
@@ -108,11 +113,14 @@ The ESP32 prints its IP address on successful WiFi connection.
 | GET | `/api/read` | Read tag (inventory + sysinfo + all blocks) |
 | POST | `/api/write` | Write all blocks to tag |
 | POST | `/api/csetuid` | Set UID on magic card |
-| GET | `/api/dumps` | List saved dumps |
-| GET | `/api/dump?name=xxx` | Load a dump |
-| POST | `/api/dump?name=xxx` | Save a dump |
-| DELETE | `/api/dump?name=xxx` | Delete a dump |
-| POST | `/api/dump/rename` | Rename a dump |
+| GET | `/api/dumps` | List files (`[{name, size}, ...]`) |
+| GET | `/api/dump?name=xxx` | Load a dump (JSON) |
+| POST | `/api/dump?name=xxx` | Save a dump (JSON) |
+| DELETE | `/api/dump?name=xxx` | Delete a file |
+| POST | `/api/dump/rename` | Rename a file (`{oldName, newName}`) |
+| GET | `/api/rawfile?name=xxx` | Download raw file bytes |
+| POST | `/api/upload?name=xxx` | Upload a file (multipart/form-data, chunked) |
+| GET | `/api/spiffs` | SPIFFS usage (`{used, total}`) |
 | POST | `/api/emulate/start` | Start emulation from a saved dump |
 | POST | `/api/emulate/stop` | Stop emulation |
 | GET | `/api/emulate/status` | Emulation status (`active`, `fieldDetected`, `cmdCount`) |
@@ -120,9 +128,6 @@ The ESP32 prints its IP address on successful WiFi connection.
 ---
 
 ## Planned / WIP / TODO
-
-### Minor UI fix (next)
-- Remove literal space characters between displayed bytes — use CSS-only visual separation instead
 
 ### Major feature upgrade (next)
 - **Multi-standard support** — implement read & write for all RF standards the PN5180 hardware supports:
@@ -143,9 +148,9 @@ platformio.ini          PlatformIO build config
 src/
   config.h              Local config (WiFi creds, pins) — gitignored
   config.h.example      Template for config.h
-  main.cpp              WiFi setup, web server routes
+  main.cpp              WiFi setup, web server routes, upload/SPIFFS handlers
   PN5180ISO15693.h/.cpp PN5180 SPI driver + ISO 15693 protocol
-  DumpManager.h/.cpp    SPIFFS dump save/load + JSON serialisation
+  DumpManager.h/.cpp    SPIFFS file management, JSON serialisation, usedBytes()
   web_ui.h              Embedded single-page web application (PROGMEM)
-data/                   SPIFFS filesystem root (currently empty)
+data/                   SPIFFS filesystem root (used for stored dumps/files)
 ```

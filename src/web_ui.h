@@ -121,32 +121,8 @@ input[type="radio"]{accent-color:#00d4ff}
     <button class="btn btn-primary" onclick="doRead()">Read Tag</button>
   </div>
 
-  <!-- Tag Info (readonly) -->
-  <div class="card">
-    <h2>Tag Info</h2>
-    <div class="form-row">
-      <label>UID:</label>
-      <input type="text" id="readUid" class="uid-input" maxlength="16" readonly value="">
-    </div>
-    <div class="info-grid">
-      <div class="info-item">Blocks: <span id="readInfoBlocks">-</span></div>
-      <div class="info-item">Block Size: <span id="readInfoBlockSize">-</span></div>
-      <div class="info-item">DSFID: <span id="readInfoDsfid">-</span></div>
-      <div class="info-item">AFI: <span id="readInfoAfi">-</span></div>
-      <div class="info-item">IC Ref: <span id="readInfoIcRef">-</span></div>
-    </div>
-  </div>
-
-  <!-- Block Data (readonly) -->
-  <div class="card">
-    <h2>Block Data</h2>
-    <div class="block-grid" id="readBlockGrid">
-      <div style="color:#666;text-align:center;padding:20px">No data. Click "Read Tag" to scan.</div>
-    </div>
-  </div>
-
   <!-- Save -->
-  <div class="card">
+  <div class="card" id="readSaveCard">
     <h2>Save Dump</h2>
     <div class="form-row">
       <label>Name:</label>
@@ -173,32 +149,8 @@ input[type="radio"]{accent-color:#00d4ff}
     </div>
   </div>
 
-  <!-- Tag Info (editable) -->
-  <div class="card">
-    <h2>Tag Info</h2>
-    <div class="form-row">
-      <label>UID:</label>
-      <input type="text" id="writeUid" class="uid-input" maxlength="16" value="">
-    </div>
-    <div class="info-grid">
-      <div class="info-item">Blocks: <span id="writeInfoBlocks">-</span></div>
-      <div class="info-item">Block Size: <span id="writeInfoBlockSize">-</span></div>
-      <div class="info-item">DSFID: <span id="writeInfoDsfid">-</span></div>
-      <div class="info-item">AFI: <span id="writeInfoAfi">-</span></div>
-      <div class="info-item">IC Ref: <span id="writeInfoIcRef">-</span></div>
-    </div>
-  </div>
-
-  <!-- Block Data (editable) -->
-  <div class="card">
-    <h2>Block Data</h2>
-    <div class="block-grid" id="writeBlockGrid">
-      <div style="color:#666;text-align:center;padding:20px">No data loaded. Read a tag or load a dump.</div>
-    </div>
-  </div>
-
   <!-- Write Operations -->
-  <div class="card">
+  <div class="card" id="writeOpsCard">
     <h2>Write Operations</h2>
     <div class="toggle-row">
       <label class="toggle">
@@ -232,32 +184,8 @@ input[type="radio"]{accent-color:#00d4ff}
     </div>
   </div>
 
-  <!-- Tag Info (readonly) -->
-  <div class="card">
-    <h2>Tag Info</h2>
-    <div class="form-row">
-      <label>UID:</label>
-      <input type="text" id="emuUid" class="uid-input" maxlength="16" readonly value="">
-    </div>
-    <div class="info-grid">
-      <div class="info-item">Blocks: <span id="emuInfoBlocks">-</span></div>
-      <div class="info-item">Block Size: <span id="emuInfoBlockSize">-</span></div>
-      <div class="info-item">DSFID: <span id="emuInfoDsfid">-</span></div>
-      <div class="info-item">AFI: <span id="emuInfoAfi">-</span></div>
-      <div class="info-item">IC Ref: <span id="emuInfoIcRef">-</span></div>
-    </div>
-  </div>
-
-  <!-- Block Data (readonly) -->
-  <div class="card">
-    <h2>Block Data</h2>
-    <div class="block-grid" id="emuBlockGrid">
-      <div style="color:#666;text-align:center;padding:20px">No data loaded. Load a dump to emulate.</div>
-    </div>
-  </div>
-
   <!-- Emulation Controls -->
-  <div class="card">
+  <div class="card" id="emuControlsCard">
     <h2>Emulation</h2>
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
       <button class="btn btn-success" id="emuBtn" onclick="toggleEmulation()">Start Emulation</button>
@@ -276,6 +204,30 @@ input[type="radio"]{accent-color:#00d4ff}
     <p style="margin-top:10px;font-size:0.75em;color:#555">Remove any physical tag from the reader before emulating. The PN5180 antenna will act as the emulated tag.</p>
   </div>
 
+</div>
+
+<!-- Shared Tag Info + Block Data (moved into active tab by JS) -->
+<div id="sharedTagSection" style="display:none">
+  <div class="card">
+    <h2>Tag Info</h2>
+    <div class="form-row">
+      <label>UID:</label>
+      <input type="text" id="sharedUid" class="uid-input" maxlength="16" value="">
+    </div>
+    <div class="info-grid">
+      <div class="info-item">Blocks: <span id="sharedInfoBlocks">-</span></div>
+      <div class="info-item">Block Size: <span id="sharedInfoBlockSize">-</span></div>
+      <div class="info-item">DSFID: <input type="text" id="sharedInfoDsfid" maxlength="2" style="width:3em;font-family:'Consolas',monospace;font-size:0.9em;text-transform:uppercase" value="00"></div>
+      <div class="info-item">AFI: <input type="text" id="sharedInfoAfi" maxlength="2" style="width:3em;font-family:'Consolas',monospace;font-size:0.9em;text-transform:uppercase" value="00"></div>
+      <div class="info-item">IC Ref: <input type="text" id="sharedInfoIcRef" maxlength="2" style="width:3em;font-family:'Consolas',monospace;font-size:0.9em;text-transform:uppercase" value="00"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Block Data</h2>
+    <div class="block-grid" id="sharedBlockGrid">
+      <div style="color:#666;text-align:center;padding:20px">No data loaded.</div>
+    </div>
+  </div>
 </div>
 
 </div>
@@ -359,13 +311,24 @@ async function api(method, url, body) {
 function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tab));
-  if (tab === 'write') {
+  const sec = document.getElementById('sharedTagSection');
+  if (tab === 'read') {
+    const anchor = document.getElementById('readSaveCard');
+    anchor.parentNode.insertBefore(sec, anchor);
+    sec.style.display = '';
+    updateSharedUI();
+  } else if (tab === 'write') {
+    const anchor = document.getElementById('writeOpsCard');
+    anchor.parentNode.insertBefore(sec, anchor);
+    sec.style.display = '';
     loadDumpList();
-    updateWriteUI();
-  }
-  if (tab === 'emulate') {
+    updateSharedUI();
+  } else if (tab === 'emulate') {
+    const anchor = document.getElementById('emuControlsCard');
+    anchor.parentNode.insertBefore(sec, anchor);
+    sec.style.display = '';
     loadEmuDumpList();
-    updateEmuUI();
+    updateSharedUI();
   }
 }
 
@@ -388,29 +351,21 @@ function formatBlock(hex) {
   return hex.match(/.{2}/g).join(' ');
 }
 
-// ========== Read Tab ==========
+// ========== Tag UI ==========
 
-function updateReadUI() {
-  document.getElementById('readUid').value = tagData.uid;
-  document.getElementById('readInfoBlocks').textContent = tagData.blockCount || '-';
-  document.getElementById('readInfoBlockSize').textContent = tagData.blockSize || '-';
-  document.getElementById('readInfoDsfid').textContent = tagData.dsfid || '-';
-  document.getElementById('readInfoAfi').textContent = tagData.afi || '-';
-  document.getElementById('readInfoIcRef').textContent = tagData.icRef || '-';
-  renderBlocks('readBlockGrid', true);
+function updateSharedUI() {
+  const uid = document.getElementById('sharedUid');
+  if (!uid) return;
+  uid.value = tagData.uid;
+  document.getElementById('sharedInfoBlocks').textContent = tagData.blockCount || '-';
+  document.getElementById('sharedInfoBlockSize').textContent = tagData.blockSize || '-';
+  document.getElementById('sharedInfoDsfid').value = tagData.dsfid || '00';
+  document.getElementById('sharedInfoAfi').value = tagData.afi || '00';
+  document.getElementById('sharedInfoIcRef').value = tagData.icRef || '00';
+  renderBlocks('sharedBlockGrid');
 }
 
-function updateWriteUI() {
-  document.getElementById('writeUid').value = tagData.uid;
-  document.getElementById('writeInfoBlocks').textContent = tagData.blockCount || '-';
-  document.getElementById('writeInfoBlockSize').textContent = tagData.blockSize || '-';
-  document.getElementById('writeInfoDsfid').textContent = tagData.dsfid || '-';
-  document.getElementById('writeInfoAfi').textContent = tagData.afi || '-';
-  document.getElementById('writeInfoIcRef').textContent = tagData.icRef || '-';
-  renderBlocks('writeBlockGrid', false);
-}
-
-function renderBlocks(gridId, readonly, srcBlocks) {
+function renderBlocks(gridId, srcBlocks) {
   const blocks = srcBlocks || tagData.blocks;
   const grid = document.getElementById(gridId);
   if (!blocks.length) {
@@ -422,8 +377,7 @@ function renderBlocks(gridId, readonly, srcBlocks) {
     const formatted = formatBlock(blocks[i]);
     html += '<div class="block-row">' +
       '<span class="block-num">#' + String(i).padStart(2,'0') + '</span>' +
-      '<input type="text" class="block-data" data-idx="'+i+'" value="'+formatted+'"' +
-      (readonly ? ' readonly' : ' oninput="onBlockEdit(this)"') + '>' +
+      '<input type="text" class="block-data" data-idx="'+i+'" value="'+formatted+'" oninput="onBlockEdit(this)">' +
       '</div>';
   }
   grid.innerHTML = html;
@@ -437,8 +391,19 @@ function onBlockEdit(el) {
   }
 }
 
+function collectMeta() {
+  const uid = (document.getElementById('sharedUid')?.value || '').trim().toUpperCase();
+  if (uid) tagData.uid = uid;
+  const dsfid = (document.getElementById('sharedInfoDsfid')?.value || '').trim().toUpperCase();
+  if (/^[0-9A-F]{1,2}$/.test(dsfid)) tagData.dsfid = dsfid.padStart(2,'0');
+  const afi = (document.getElementById('sharedInfoAfi')?.value || '').trim().toUpperCase();
+  if (/^[0-9A-F]{1,2}$/.test(afi)) tagData.afi = afi.padStart(2,'0');
+  const icRef = (document.getElementById('sharedInfoIcRef')?.value || '').trim().toUpperCase();
+  if (/^[0-9A-F]{1,2}$/.test(icRef)) tagData.icRef = icRef.padStart(2,'0');
+}
+
 function collectBlocks() {
-  document.querySelectorAll('#writeBlockGrid .block-data').forEach(el => {
+  document.querySelectorAll('#sharedBlockGrid .block-data').forEach(el => {
     const idx = parseInt(el.dataset.idx);
     const raw = el.value.replace(/\s/g,'').toUpperCase();
     if (/^[0-9A-F]*$/.test(raw)) tagData.blocks[idx] = raw;
@@ -477,17 +442,17 @@ async function doRead() {
   tagData.blockSize = d.blockSize || 4;
   tagData.blockCount = d.blockCount || 0;
   tagData.blocks = dataHexToBlocks(d.data || '', tagData.blockSize);
-  updateReadUI();
-  updateWriteUI();
+  updateSharedUI();
   toast('Read ' + tagData.blockCount + ' blocks', true);
 }
 
 async function doWrite() {
+  collectMeta();
   collectBlocks();
   if (!tagData.blocks.length) { toast('No data to write', false); return; }
 
   const setUid = document.getElementById('toggleSetUid').checked;
-  const writeUid = document.getElementById('writeUid').value.trim().toUpperCase();
+  const writeUid = document.getElementById('sharedUid').value.trim().toUpperCase();
 
   if (setUid) {
     // Will also set UID — validate it
@@ -525,9 +490,10 @@ async function doWrite() {
 }
 
 async function executeWrite() {
+  collectMeta();
   collectBlocks();
   const setUid = document.getElementById('toggleSetUid').checked;
-  const writeUid = document.getElementById('writeUid').value.trim().toUpperCase();
+  const writeUid = document.getElementById('sharedUid').value.trim().toUpperCase();
 
   // Write blocks
   const payload = {
@@ -554,6 +520,8 @@ async function executeWrite() {
 }
 
 async function doSave() {
+  collectMeta();
+  collectBlocks();
   const stem = document.getElementById('saveDumpName').value.trim();
   if (!stem) { toast('Enter a dump name', false); return; }
   if (!/^[a-zA-Z0-9_\-]+$/.test(stem)) { toast('Name: letters, numbers, _ - only', false); return; }
@@ -613,8 +581,7 @@ async function doLoad(name) {
   tagData.blockSize = d.blockSize || 4;
   tagData.blockCount = d.blockCount || 0;
   tagData.blocks = dataHexToBlocks(d.data || '', tagData.blockSize);
-  updateReadUI();
-  updateWriteUI();
+  updateSharedUI();
   toast('Loaded: ' + name, true);
 }
 
@@ -647,19 +614,7 @@ async function confirmRename() {
 
 // ========== Emulate Tab ==========
 
-let emuData = {uid:'',dsfid:'00',afi:'00',icRef:'00',blockSize:4,blockCount:0,blocks:[]};
-let emuLoadedName = '';
 let emuPolling = null;
-
-function updateEmuUI() {
-  document.getElementById('emuUid').value = emuData.uid;
-  document.getElementById('emuInfoBlocks').textContent = emuData.blockCount || '-';
-  document.getElementById('emuInfoBlockSize').textContent = emuData.blockSize || '-';
-  document.getElementById('emuInfoDsfid').textContent = emuData.dsfid || '-';
-  document.getElementById('emuInfoAfi').textContent = emuData.afi || '-';
-  document.getElementById('emuInfoIcRef').textContent = emuData.icRef || '-';
-  renderBlocks('emuBlockGrid', true, emuData.blocks);
-}
 
 async function loadEmuDumpList() {
   const r = await api('GET', '/api/dumps');
@@ -690,16 +645,15 @@ async function doEmuLoad(name) {
   const r = await api('GET', '/api/dump?name=' + encodeURIComponent(name));
   if (!r || !r.data) return;
   const d = r.data;
-  emuData.uid = d.uid || '';
-  emuData.dsfid = d.dsfid || '00';
-  emuData.afi = d.afi || '00';
-  emuData.icRef = d.icRef || '00';
-  emuData.blockSize = d.blockSize || 4;
-  emuData.blockCount = d.blockCount || 0;
-  emuData.blocks = dataHexToBlocks(d.data || '', emuData.blockSize);
-  emuLoadedName = name;
-  updateEmuUI();
-  toast('Loaded for emulation: ' + name, true);
+  tagData.uid = d.uid || '';
+  tagData.dsfid = d.dsfid || '00';
+  tagData.afi = d.afi || '00';
+  tagData.icRef = d.icRef || '00';
+  tagData.blockSize = d.blockSize || 4;
+  tagData.blockCount = d.blockCount || 0;
+  tagData.blocks = dataHexToBlocks(d.data || '', tagData.blockSize);
+  updateSharedUI();
+  toast('Loaded: ' + name, true);
 }
 
 async function toggleEmulation() {
@@ -715,14 +669,25 @@ async function toggleEmulation() {
     toast('Emulation stopped', true);
     return;
   }
-  if (!emuLoadedName) { toast('Load a dump first', false); return; }
-  const r = await api('POST', '/api/emulate/start', {name: emuLoadedName});
+  if (!tagData.blocks.length) { toast('No data to emulate', false); return; }
+  collectMeta();
+  collectBlocks();
+  const payload = {
+    uid: document.getElementById('sharedUid').value.trim().toUpperCase(),
+    dsfid: tagData.dsfid,
+    afi: tagData.afi,
+    icRef: tagData.icRef,
+    blockSize: tagData.blockSize,
+    blockCount: tagData.blocks.length,
+    data: blocksToDataHex()
+  };
+  const r = await api('POST', '/api/emulate/start', payload);
   if (!r) return;
   btn.textContent = 'Stop Emulation';
   btn.className = 'btn btn-danger';
   document.getElementById('emuStatusLabel').textContent = 'Running...';
   startEmuPolling();
-  toast('Emulation started: ' + emuLoadedName, true);
+  toast('Emulation started', true);
 }
 
 function startEmuPolling() {
@@ -783,6 +748,8 @@ async function doDownload(name) {
 }
 
 function doDownloadCurrent() {
+  collectMeta();
+  collectBlocks();
   if (!tagData.blocks.length) { toast('No data to download', false); return; }
   const dump = {
     type: 'ISO15693',
@@ -849,6 +816,7 @@ async function refreshSpiffs() {
 // ========== Init ==========
 window.addEventListener('load', () => {
   document.getElementById('ipDisplay').textContent = location.host;
+  switchTab('read');
   refreshSpiffs();
 });
 </script>
