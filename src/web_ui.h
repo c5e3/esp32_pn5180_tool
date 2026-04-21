@@ -272,6 +272,29 @@ input[type="radio"]{accent-color:#00d4ff}
     </div>
   </div>
 
+  <!-- Card Fingerprint (proxmark `hf mf info` port) -->
+  <div class="collapse-hdr" id="cidentHdr" onclick="toggleCollapse('cident')">
+    <span class="title">🔍 Card Fingerprint</span>
+    <span class="arrow">▶</span>
+  </div>
+  <div class="collapse-body" id="cidentBody">
+    <div class="card">
+      <h2>MIFARE Classic Clone Detection</h2>
+      <p style="font-size:0.78em;color:#888;margin-bottom:8px">
+        Probes for magic-card capabilities (Gen 1A/1B, Gen 2 / CUID, Gen 3, Gen 4 GTU,
+        Gen 4 GDM / USCUID, FUID, Super Card) and tries known Fudan / NXP / Infineon
+        backdoor keys. If a backdoor matches, block 0 is read and matched against
+        a known-clone fingerprint table. PRNG / static-nonce checks aren't possible
+        on PN5180.
+      </p>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <button class="btn btn-primary" onclick="doIdentCard()" style="flex-shrink:0">Identify Card</button>
+        <span id="cidentStatus" style="font-size:0.85em;color:#bbb">Idle</span>
+      </div>
+      <div id="cidentResult" style="font-family:Consolas,monospace;font-size:0.82em;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:6px;padding:10px;min-height:60px;white-space:pre-wrap;color:#ddd"></div>
+    </div>
+  </div>
+
 </div>
 
 <!-- Shared Tag Info + Block Data (moved into active tab by JS) -->
@@ -1099,6 +1122,53 @@ async function doUpload(input) {
     refreshSpiffs();
   } catch(e) {
     toast('Upload error: ' + e.message, false);
+  } finally {
+    setBusy(false);
+  }
+}
+
+// ========== Card Fingerprint (Tools tab) ==========
+
+async function doIdentCard() {
+  if (busy) return;
+  const status = document.getElementById('cidentStatus');
+  const result = document.getElementById('cidentResult');
+  setBusy(true);
+  status.textContent = 'Probing card... (~1s)';
+  result.textContent = '';
+  try {
+    const r = await fetch('/api/cident');
+    const j = await r.json();
+    if (j.err) {
+      status.textContent = j.err === 'no_tag' ? 'No tag detected' : ('Error: ' + j.err);
+      toast(j.err === 'no_tag' ? 'No tag detected' : ('Error: ' + j.err), false);
+      return;
+    }
+    status.textContent = 'Done';
+    let out = '';
+    out += 'UID:    ' + (j.uid || '?') + '\n';
+    out += 'SAK:    ' + (j.sak || '?') + '\n';
+    out += 'ATQA:   ' + (j.atqa || '?') + '\n';
+    out += 'Type:   ' + (j.type || '?') + '\n';
+    out += '\nMagic capabilities:\n';
+    if (j.magic && j.magic.length) {
+      j.magic.forEach(m => out += '  • ' + m + '\n');
+    } else {
+      out += '  (none detected)\n';
+    }
+    if (j.backdoor) {
+      out += '\nBackdoor key:  ' + j.backdoor.name + '  (' + j.backdoor.key + ')\n';
+    }
+    if (j.block0) {
+      out += '\nBlock 0:  ' + j.block0 + '\n';
+    }
+    if (j.fingerprint) {
+      out += '\nFingerprint:  ' + j.fingerprint + '\n';
+    }
+    result.textContent = out;
+  } catch(e) {
+    status.textContent = 'Connection error';
+    toast('Connection error: ' + e.message, false);
   } finally {
     setBusy(false);
   }

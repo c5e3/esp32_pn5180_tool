@@ -729,6 +729,17 @@ void handleRegDump() {
     server.send(200, "text/plain", "See Serial monitor\n");
 }
 
+// Card identification / clone fingerprinting (port of proxmark3 `hf mf info`).
+// Runs magic-card probes + backdoor key auth + block-0 fingerprint.
+void handleIdentCard() {
+    GUARD_EMULATION();
+    GUARD_NFC_BUSY();
+    nfcBusy = true;
+    String result = nfcMifare.identCard();
+    nfcBusy = false;
+    server.send(200, "application/json", result);
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.println("\n=== NFC Tool ===");
@@ -798,6 +809,7 @@ void setup() {
     server.on("/api/test14443", HTTP_GET, handleTest14443);
     server.on("/api/testauth",  HTTP_GET, handleTestAuth);
     server.on("/api/regdump",   HTTP_GET, handleRegDump);
+    server.on("/api/cident",    HTTP_GET, handleIdentCard);
     server.on("/api/spiffs",    HTTP_GET, handleSpiffsInfo);
     server.on("/api/rawfile", HTTP_GET, handleRawFile);
     server.on("/api/upload", HTTP_POST, handleUploadDone, handleUploadChunk);

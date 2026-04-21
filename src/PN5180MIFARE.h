@@ -114,6 +114,14 @@ public:
     // Live debug: REQA + SELECT + MIFARE_AUTHENTICATE with caller-supplied key.
     // Returns JSON describing detect result and the raw 1-byte auth status.
     String debugAuth(const uint8_t key[6], uint8_t block, bool useKeyA);
+
+    // Card identification / clone fingerprinting (proxmark "hf mf info" port).
+    // Runs magic-card probes (Gen1A/1B, Gen2, Gen3, Gen4 GTU, Gen4 GDM,
+    // Super Card, FUID), tries Fudan/NXP/Infineon backdoor keys, and
+    // matches block-0 against a known-clone fingerprint table.
+    // Returns a JSON string. Manages RF on/off internally.
+    String identCard();
+
     bool detectTag(MifareTagInfo *info);          // REQA + anticollision + SELECT
     bool reActivateCard(MifareTagInfo *info);     // RF cycle + SELECT (after auth failure)
     bool reSelectCard(MifareTagInfo *info);       // WUPA + SELECT only, no RF cycle (faster)

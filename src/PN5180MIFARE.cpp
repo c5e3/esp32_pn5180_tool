@@ -1054,3 +1054,356 @@ const char *PN5180MIFARE::typeString(MifareType t) {
         default:                  return "UNKNOWN";
     }
 }
+
+// ===========================================================================
+// Card identification / clone fingerprinting
+// ---------------------------------------------------------------------------
+// Port of proxmark3's `hf mf info` (armsrc/mifarecmd.c::MifareCIdent and
+// client/src/mifare/mifarehost.c::detect_mf_magic + cmdhfmf.c fingerprint
+// table). PN5180 cannot expose the raw Crypto1 nonce stream, so static-nonce
+// and PRNG-weakness checks are intentionally omitted.
+// ===========================================================================
+
+namespace {
+
+// Append "0x" + uppercase hex bytes to a String, space-separated.
+static void appendHexBytes(String &s, const uint8_t *p, uint8_t n, bool spaces = true) {
+    char buf[4];
+    for (uint8_t i = 0; i < n; i++) {
+        if (spaces && i) s += ' ';
+        snprintf(buf, sizeof(buf), "%02X", p[i]);
+        s += buf;
+    }
+}
+
+static String jsonHexBytes(const uint8_t *p, uint8_t n) {
+    String s = "\"";
+    appendHexBytes(s, p, n, true);
+    s += "\"";
+    return s;
+}
+
+// Backdoor keys discovered by the proxmark community (cmdhfmf.c).
+struct BackdoorKey {
+    uint8_t     key[6];
+    const char *name;
+};
+static const BackdoorKey kBackdoorKeys[] = {
+    { {0xA3, 0x96, 0xEF, 0xA4, 0xE2, 0x4F}, "RF08S"      },
+    { {0xA3, 0x16, 0x67, 0xA8, 0xCE, 0xC1}, "RF08"       },
+    { {0x51, 0x8B, 0x33, 0x54, 0xE7, 0x60}, "RF32N"      },
+    { {0x73, 0xB9, 0x83, 0x6C, 0xF1, 0x68}, "RF32N-alt"  },
+};
+
+}  // namespace
+
+String PN5180MIFARE::identCard() {
+    String out = "{";
+
+    // ── 1. RF up + initial detect ─────────────────────────────────────────
+    loadISO14443Config();
+    if (!activateRF()) {
+        return "{\"err\":\"rf_on_fail\"}";
+    }
+    delay(50);
+
+    MifareTagInfo info;
+    if (!detectTag(&info)) {
+        disableRF();
+        return "{\"err\":\"no_tag\"}";
+    }
+
+    out += "\"uid\":\"";
+    appendHexBytes(out, info.uid, info.uidLen, false);
+    out += "\",\"sak\":\"";
+    char sakStr[3];
+    snprintf(sakStr, sizeof(sakStr), "%02X", info.sak);
+    out += sakStr;
+    out += "\",\"atqa\":\"";
+    char atqaStr[5];
+    snprintf(atqaStr, sizeof(atqaStr), "%02X%02X", info.atqa[1], info.atqa[0]);
+    out += atqaStr;
+    out += "\",\"type\":\"";
+    out += typeString(info.type);
+    out += "\"";
+
+    // Helper lambdas for RF reset between probes
+    auto resetField = [this]() {
+        disableRF();
+        delay(15);
+        activateRF();
+        delay(20);
+        loadISO14443Config();
+        writeRegister(0x1A, 0x02U);
+    };
+    auto resetAndSelect = [this, &resetField](MifareTagInfo *i) -> bool {
+        resetField();
+        return detectTag(i);
+    };
+
+    // Send a short frame (any bit count) on a fresh field, no SELECT.
+    // Returns true and fills resp/respLen if the card replied.
+    auto shortFrame = [this](uint8_t cmdByte, uint8_t bits,
+                              uint8_t *resp, uint8_t *respLen) -> bool {
+        andRegister(REG_CRC_TX_CONFIG, 0xFFFFFFFEU);
+        andRegister(REG_CRC_RX_CONFIG, 0xFFFFFFFEU);
+        andRegister(REG_SYSTEM_CONFIG, 0xFFFFFFBFU);
+        clearIRQ();
+        setIdle();
+        activateTransceive();
+
+        uint8_t buf[3] = { PN5180_SEND_DATA, bits, cmdByte };
+        if (!spiSend(buf, sizeof(buf))) return false;
+
+        delay(5);
+        uint32_t rxStatus = readRegister(REG_RX_STATUS);
+        uint8_t rlen = (uint8_t)(rxStatus & 0x1FF);
+        clearIRQ();
+        if (rlen == 0) { *respLen = 0; return false; }
+        if (rlen > 32) rlen = 32;
+
+        uint8_t rc[2] = { PN5180_READ_DATA, 0x00 };
+        spiSend(rc, sizeof(rc));
+        if (!spiReceive(resp, rlen)) { *respLen = 0; return false; }
+        *respLen = rlen;
+        return true;
+    };
+
+    String magic;     // comma-separated list, JSON-array assembled at end
+    auto pushMagic = [&magic](const char *s) {
+        if (magic.length()) magic += ',';
+        magic += '"';
+        magic += s;
+        magic += '"';
+    };
+
+    // ── 2. Gen 1A / 1B magic wakeup ───────────────────────────────────────
+    {
+        resetField();
+        uint8_t r[8] = {0};
+        uint8_t rlen = 0;
+        if (shortFrame(0x40, 0x07, r, &rlen) && rlen >= 1 && (r[0] & 0x0F) == 0x0A) {
+            // Card answered the magic wakeup — send full-byte 0x43
+            uint8_t r2[8] = {0};
+            uint8_t rl2 = 0;
+            bool ack2 = shortFrame(0x43, 0x00, r2, &rl2) && rl2 >= 1 && (r2[0] & 0x0F) == 0x0A;
+            pushMagic(ack2 ? "Gen 1A" : "Gen 1B");
+        }
+    }
+
+    // ── 3. Gen 3 magic (raw read block 0 without auth) ────────────────────
+    {
+        if (resetAndSelect(&info)) {
+            uint8_t cmd[4] = { 0x30, 0x00, 0x02, 0xA8 };  // READ blk0 + CRC
+            uint8_t resp[20] = {0};
+            uint8_t rl = 0;
+            if (transceive14443(cmd, 4, resp, &rl, 50) && rl == 18) {
+                pushMagic("Gen 3 / APDU");
+            }
+        }
+    }
+
+    // ── 4. Gen 4 GTU (vendor get-config with default password 0) ──────────
+    {
+        if (resetAndSelect(&info)) {
+            uint8_t cmd[8] = { 0xCF, 0x00, 0x00, 0x00, 0x00, 0xC6, 0x00, 0x00 };
+            uint8_t l = 6;
+            appendCRC16(cmd, &l);
+            uint8_t resp[40] = {0};
+            uint8_t rl = 0;
+            if (transceive14443(cmd, 8, resp, &rl, 80) && (rl == 32 || rl == 34)) {
+                pushMagic("Gen 4 GTU");
+            }
+        }
+    }
+
+    // ── 5. Gen 4 GDM / USCUID magic auth (80 00 6C 92) ────────────────────
+    {
+        if (resetAndSelect(&info)) {
+            uint8_t cmd[4] = { 0x80, 0x00, 0x6C, 0x92 };
+            uint8_t resp[8] = {0};
+            uint8_t rl = 0;
+            if (transceive14443(cmd, 4, resp, &rl, 50) && rl == 4) {
+                pushMagic("Gen 4 GDM / USCUID");
+            }
+        }
+    }
+
+    // ── 6. Super Card Gen1/Gen2 ───────────────────────────────────────────
+    {
+        if (resetAndSelect(&info)) {
+            uint8_t cmd[9] = { 0x0A, 0x00, 0x00, 0xA6, 0xB0, 0x00, 0x10, 0x14, 0x1D };
+            uint8_t resp[32] = {0};
+            uint8_t rl = 0;
+            if (transceive14443(cmd, 9, resp, &rl, 80) && rl == 22) {
+                pushMagic("Super Card Gen 1");
+                // Optional Gen2 follow-up: read block 0 after re-select
+                if (resetAndSelect(&info)) {
+                    uint8_t rd[4] = { 0x30, 0x00, 0x02, 0xA8 };
+                    uint8_t r2[20] = {0};
+                    uint8_t rl2 = 0;
+                    if (transceive14443(rd, 4, r2, &rl2, 50) && rl2 == 18) {
+                        pushMagic("Super Card Gen 2");
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 7. FUID (UID == AA 55 C3 96) ──────────────────────────────────────
+    if (info.uidLen >= 4 &&
+        info.uid[0] == 0xAA && info.uid[1] == 0x55 &&
+        info.uid[2] == 0xC3 && info.uid[3] == 0x96) {
+        pushMagic("FUID / Write Once");
+    }
+
+    // ── 8. Gen 2 / CUID — auth + WRITEBLOCK(0) ACK probe ──────────────────
+    // Safe: we send only the 4-byte WRITE command. A magic Gen2 card returns
+    // a 4-bit ACK (0x0A) before expecting 16 bytes of data. We immediately
+    // power off the RF so no actual write can ever occur.
+    {
+        if (resetAndSelect(&info)) {
+            uint8_t defKey[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+            if (mfcAuthBlock(&info, 0, defKey, true)) {
+                uint8_t wcmd[2] = { MFC_WRITE, 0x00 };
+                uint8_t wresp[8] = {0};
+                uint8_t wrl = 0;
+                bool ack = transceiveInAuth(wcmd, 2, wresp, &wrl, 80) &&
+                           wrl >= 1 && (wresp[0] & 0x0F) == 0x0A;
+                // Cut RF before any data phase can happen
+                disableRF();
+                delay(20);
+                if (ack) pushMagic("Gen 2 / CUID");
+            }
+        }
+    }
+
+    // ── 9. Backdoor key auth (RF08/RF08S/RF32N) on sector 0 key B ─────────
+    int  bdKeyIdx     = -1;
+    bool bdBlock0Read = false;
+    uint8_t bdBlock0[16] = {0};
+    for (size_t k = 0; k < sizeof(kBackdoorKeys) / sizeof(kBackdoorKeys[0]); k++) {
+        if (!resetAndSelect(&info)) break;
+        uint8_t key[6];
+        memcpy(key, kBackdoorKeys[k].key, 6);
+        if (mfcAuthBlock(&info, 0, key, false)) {
+            bdKeyIdx = (int)k;
+            if (mfcReadBlock(0, bdBlock0)) bdBlock0Read = true;
+            break;
+        }
+    }
+
+    // If no backdoor matched, try a default-key read of block 0 for fingerprint
+    bool block0Read = bdBlock0Read;
+    uint8_t block0[16] = {0};
+    if (bdBlock0Read) {
+        memcpy(block0, bdBlock0, 16);
+    } else if (resetAndSelect(&info)) {
+        uint8_t defKey[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+        if (mfcAuthBlock(&info, 0, defKey, true) && mfcReadBlock(0, block0)) {
+            block0Read = true;
+        }
+    }
+
+    // ── 10. Block-0 + SAK fingerprint table (port of cmdhfmf.c) ───────────
+    const char *fingerprint = nullptr;
+    if (block0Read) {
+        const uint8_t *b   = block0;
+        uint8_t        sak = info.sak;
+
+        bool isBdRF08S = (bdKeyIdx == 0);
+        bool isBdRF08  = (bdKeyIdx == 1);
+        bool isBdRF32  = (bdKeyIdx == 2);
+        bool isBdRF32a = (bdKeyIdx == 3);
+
+        if (sak != 0x20 && memcmp(b + 8, "\x62\x63\x64\x65\x66\x67\x68\x69", 8) == 0) {
+            fingerprint = "Fudan-based clone";
+        } else if (isBdRF08S && sak == 0x08 && memcmp(b + 5, "\x08\x04\x00", 3) == 0
+                   && (b[8] == 0x03 || b[8] == 0x04 || b[8] == 0x05) && b[15] == 0x90) {
+            fingerprint = "Fudan FM11RF08S";
+        } else if (isBdRF08S && sak == 0x08 && memcmp(b + 5, "\x08\x04\x00", 3) == 0
+                   && (b[8] == 0x03 || b[8] == 0x04) && b[15] == 0x91) {
+            fingerprint = "Fudan FM11RF08 (advanced verification)";
+        } else if (isBdRF08S && sak == 0x08 && memcmp(b + 5, "\x00\x03\x00\x10", 4) == 0
+                   && b[15] == 0x90) {
+            fingerprint = "Fudan FM11RF08S-7B";
+        } else if (isBdRF08 && sak == 0x08 && memcmp(b + 5, "\x08\x04\x00", 3) == 0
+                   && (b[8] == 0x04 || b[8] == 0x05) && b[15] == 0x98) {
+            fingerprint = "Fudan FM11RF08S";
+        } else if (isBdRF08 && sak == 0x08 && memcmp(b + 5, "\x08\x04\x00", 3) == 0
+                   && (b[8] >= 0x01 && b[8] <= 0x03) && b[15] == 0x1D) {
+            fingerprint = "Fudan FM11RF08";
+        } else if (isBdRF08 && sak == 0x08 && memcmp(b + 5, "\x00\x01\x00\x10", 4) == 0
+                   && b[15] == 0x1D) {
+            fingerprint = "Fudan FM11RF08-7B";
+        } else if (isBdRF32 && sak == 0x18
+                   && memcmp(b + 5, "\x18\x02\x00\x46\x44\x53\x37\x30\x56\x30\x31", 11) == 0) {
+            fingerprint = "Fudan FM11RF32N";
+        } else if (isBdRF32a && sak == 0x18
+                   && memcmp(b + 5, "\x18\x02\x00\x46\x44\x53\x37\x30\x56\x30\x31", 11) == 0) {
+            fingerprint = "Fudan FM11RF32N (variant)";
+        } else if (isBdRF08 && sak == 0x19
+                   && memcmp(b + 8, "\x69\x44\x4C\x4B\x56\x32\x01\x92", 8) == 0) {
+            fingerprint = "Fudan-based iDTRONICS IDT M1K (SAK=19)";
+        } else if (isBdRF08 && sak == 0x20
+                   && memcmp(b + 8, "\x62\x63\x64\x65\x66\x67\x68\x69", 8) == 0) {
+            fingerprint = "Fudan FM11RF32 (SAK=20)";
+        } else if (isBdRF08 && sak == 0x28
+                   && ((memcmp(b + 5, "\x28\x04\x00\x90\x10\x15\x01\x00\x00\x00\x00", 11) == 0) ||
+                       (memcmp(b + 5, "\x28\x04\x00\x90\x11\x15\x01\x00\x00\x00\x00", 11) == 0))) {
+            fingerprint = "Fudan FM1208-10";
+        } else if (isBdRF08 && sak == 0x28
+                   && memcmp(b + 5, "\x28\x04\x00\x90\x93\x56\x09\x00\x00\x00\x00", 11) == 0) {
+            fingerprint = "Fudan FM1216-110";
+        } else if (isBdRF08 && sak == 0x28
+                   && memcmp(b + 5, "\x28\x04\x00\x90\x53\xB7\x0C\x00\x00\x00\x00", 11) == 0) {
+            fingerprint = "Fudan FM1216-137";
+        } else if (isBdRF08 && sak == 0x88 && memcmp(b + 5, "\x88\x04\x00\x43", 4) == 0) {
+            fingerprint = "Infineon SLE66R35";
+        } else if (isBdRF08 && sak == 0x08 && memcmp(b + 5, "\x88\x04\x00\x44", 4) == 0) {
+            fingerprint = "NXP MF1ICS5003";
+        } else if (isBdRF08 && sak == 0x08 && memcmp(b + 5, "\x88\x04\x00\x45", 4) == 0) {
+            fingerprint = "NXP MF1ICS5004";
+        } else if (bdKeyIdx >= 0) {
+            fingerprint = "Unknown card with backdoor (please report)";
+        } else if (sak == 0x08 && memcmp(b + 5, "\x88\x04\x00\x46", 4) == 0) {
+            fingerprint = "NXP MF1ICS5005";
+        } else if (sak == 0x08 && memcmp(b + 5, "\x88\x04\x00\x47", 4) == 0) {
+            fingerprint = "NXP MF1ICS5006";
+        } else if (sak == 0x09 && memcmp(b + 5, "\x89\x04\x00\x47", 4) == 0) {
+            fingerprint = "NXP MF1ICS2006";
+        } else if (sak == 0x08 && memcmp(b + 5, "\x88\x04\x00\x48", 4) == 0) {
+            fingerprint = "NXP MF1ICS5007";
+        } else if (sak == 0x08 && memcmp(b + 5, "\x88\x04\x00\xC0", 4) == 0) {
+            fingerprint = "NXP MF1ICS5035";
+        }
+    }
+
+    // ── Assemble JSON ─────────────────────────────────────────────────────
+    out += ",\"magic\":[" + magic + "]";
+
+    if (bdKeyIdx >= 0) {
+        out += ",\"backdoor\":{\"name\":\"";
+        out += kBackdoorKeys[bdKeyIdx].name;
+        out += "\",\"key\":\"";
+        appendHexBytes(out, kBackdoorKeys[bdKeyIdx].key, 6, false);
+        out += "\"}";
+    }
+
+    if (block0Read) {
+        out += ",\"block0\":";
+        out += jsonHexBytes(block0, 16);
+    }
+
+    if (fingerprint) {
+        out += ",\"fingerprint\":\"";
+        out += fingerprint;
+        out += "\"";
+    }
+
+    haltTag();
+    disableRF();
+    out += "}";
+    Serial.println("[ident] " + out);
+    return out;
+}
