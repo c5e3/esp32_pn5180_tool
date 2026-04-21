@@ -1013,30 +1013,37 @@ async function loadDumpList() {
 async function doLoad(name) {
   const r = await api('GET', '/api/dump?name=' + encodeURIComponent(name));
   if (!r || !r.data) return;
-  const d = r.data;
+  applyDumpToTag(r.data);
+  toast('Loaded: ' + name, true);
+}
+
+// Apply a dump (from /api/dump or /api/read) onto tagData so every tab uses
+// the same type-aware rendering path. Without this, MFC dumps loaded in the
+// Emulate tab would render as a flat ISO-15693 grid instead of the sector
+// layout shown after a Read.
+function applyDumpToTag(d) {
   tagData.type = d.type || 'ISO15693';
-  tagData.uid = d.uid || '';
-  const isMFC = tagData.type.startsWith('MFC') || tagData.type.startsWith('MFPLUS');
-  const isMFUL = tagData.type === 'MFUL';
+  tagData.uid  = d.uid  || '';
+  const isMFC  = tagData.type.startsWith('MFC') || tagData.type.startsWith('MFPLUS');
+  const isMFUL = (tagData.type === 'MFUL');
   if (isMFC || isMFUL) {
     tagData.blockSize = d.blockSize || (isMFUL ? 4 : 16);
-    tagData.sak = d.sak || '00';
-    tagData.atqa = d.atqa || '0000';
+    tagData.sak       = d.sak  || '00';
+    tagData.atqa      = d.atqa || '0000';
     tagData.dsfid = '00'; tagData.afi = '00'; tagData.icRef = '00';
     tagData.blockRead = d.blockRead ? d.blockRead.split('').map(c => c === '1') : [];
-    tagData.keyUsed = d.keyUsed ? d.keyUsed.split('').map(c => parseInt(c)) : [];
+    tagData.keyUsed   = d.keyUsed   ? d.keyUsed.split('').map(c => parseInt(c)) : [];
   } else {
     tagData.blockSize = d.blockSize || 4;
     tagData.dsfid = d.dsfid || '00';
-    tagData.afi = d.afi || '00';
+    tagData.afi   = d.afi   || '00';
     tagData.icRef = d.icRef || '00';
     tagData.blockRead = [];
-    tagData.keyUsed = [];
+    tagData.keyUsed   = [];
   }
   tagData.blockCount = d.blockCount || 0;
-  tagData.blocks = dataHexToBlocks(d.data || '', tagData.blockSize);
+  tagData.blocks     = dataHexToBlocks(d.data || '', tagData.blockSize);
   updateSharedUI();
-  toast('Loaded: ' + name, true);
 }
 
 async function doDelete(name) {
@@ -1100,15 +1107,7 @@ async function loadEmuDumpList() {
 async function doEmuLoad(name) {
   const r = await api('GET', '/api/dump?name=' + encodeURIComponent(name));
   if (!r || !r.data) return;
-  const d = r.data;
-  tagData.uid = d.uid || '';
-  tagData.dsfid = d.dsfid || '00';
-  tagData.afi = d.afi || '00';
-  tagData.icRef = d.icRef || '00';
-  tagData.blockSize = d.blockSize || 4;
-  tagData.blockCount = d.blockCount || 0;
-  tagData.blocks = dataHexToBlocks(d.data || '', tagData.blockSize);
-  updateSharedUI();
+  applyDumpToTag(r.data);
   toast('Loaded: ' + name, true);
 }
 

@@ -287,13 +287,18 @@ void handleWrite() {
         bool ok = false;
         uint16_t magic = 0, written = 0;
         if (isMFUL) {
-            // MFUL: plain write, no magic detection needed
+            // MFUL: plain write, no magic detection needed.
+            // Detect using the module-static asyncMifareInfo (no extra ~4 KB on
+            // the loopTask stack) before dispatching the write.
             nfcMifare.loadISO14443Config();
             nfcMifare.activateRF();
             delay(50);
-            MifareTagInfo live;
-            if (nfcMifare.detectTag(&live)) {
-                ok = nfcMifare.mfulWriteAllPages(&asyncMifareInfo, &written);
+            MifareTagInfo *live = (MifareTagInfo *)malloc(sizeof(MifareTagInfo));
+            if (live) {
+                if (nfcMifare.detectTag(live)) {
+                    ok = nfcMifare.mfulWriteAllPages(&asyncMifareInfo, &written);
+                }
+                free(live);
             }
             nfcMifare.haltTag();
             nfcMifare.disableRF();

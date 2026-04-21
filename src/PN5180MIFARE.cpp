@@ -12,6 +12,7 @@
 #include "PN5180MIFARE.h"
 #include <SPIFFS.h>
 #include <freertos/semphr.h>
+#include <memory>
 
 // Signalled by pn5180IrqISR() in main.cpp whenever PN5180 asserts its IRQ pin.
 extern SemaphoreHandle_t g_irqSem;
@@ -1831,7 +1832,11 @@ bool PN5180MIFARE::writeTagFromDump(MifareTagInfo *dump,
     if (!activateRF()) return false;
     delay(50);
 
-    MifareTagInfo live;
+    // Heap-allocated — sizeof(MifareTagInfo) is ~4.4 KB and we're called
+    // from the 8 KB Arduino loopTask via the WebServer chain. Putting two of
+    // these on the stack (one here + one in detectMagicType) overflows it.
+    auto livePtr = std::unique_ptr<MifareTagInfo>(new MifareTagInfo);
+    MifareTagInfo &live = *livePtr;
     if (!detectTag(&live)) {
         Serial.println("[write] No tag detected");
         disableRF();

@@ -243,3 +243,23 @@ src/
 data/
   dicts/                Default MFC key dictionaries (mfc_std.txt, mfc_user.txt)
 ```
+
+## Disclaimer
+
+The vast majority of the code in this repository — firmware, web UI, and
+documentation alike — was generated with the assistance of GitHub Copilot,
+under human direction and review. Treat it as a hobby / research project:
+expect rough edges, and verify behaviour yourself before relying on it for
+anything important.
+
+The following upstream projects were consulted manually as references for
+protocol details, magic-card quirks, key dictionaries, and general PN5180 /
+MIFARE / ISO 15693 know-how. Credit for the underlying reverse-engineering
+work belongs to their respective authors and contributors:
+
+- [RFID Research Group — Proxmark3](https://github.com/rfidresearchgroup/proxmark3)
+- [Playful Technology — PN5180 Arduino library](https://github.com/playfultechnology/PN5180)
+- [Flipper Devices — flipperzero-firmware](https://github.com/flipperdevices/flipperzero-firmware)
+
+This tool is intended for use only on tags and systems you own or are
+explicitly authorised to test. The authors take no responsibility for misuse.
