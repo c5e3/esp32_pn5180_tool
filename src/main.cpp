@@ -56,18 +56,9 @@ static void readTask(void *) {
     g_progKeyType     = -1;
 
     // =========================================================
-    // PHASE 1 — Pre-load dict keys (SPIFFS I/O, RF field off)
-    //   Do this BEFORE activating RF so the ~100ms SPIFFS read
-    //   doesn't cause the card to time out mid-session.
-    // =========================================================
-    static uint8_t preKeys1[PN5180MIFARE::MAX_DICT_KEYS][6];
-    static uint8_t preKeys2[PN5180MIFARE::MAX_DICT_KEYS][6];
-    int n1 = nfcMifare.loadKeysFromFile("/dumps/debug_keys.txt", preKeys1, PN5180MIFARE::MAX_DICT_KEYS);
-    int n2 = 0;  // switch back to /keys_mfc_std.txt + /keys_mfc_ext.txt for production
-    Serial.printf("[read] Keys preloaded: %d\n", n1);
-
-    // =========================================================
-    // PHASE 2 — Quick protocol detection, fastest response first
+    // PHASE 1 — Quick protocol detection, fastest response first.
+    // No SPIFFS work yet: we want to know what we're dealing with
+    // before paying the dictionary-load cost.
     //
     // Detection order (add new protocols here in speed order):
     //   1. ISO 14443A  — WUPA 7-bit short frame, card replies in ~2ms
@@ -88,16 +79,32 @@ static void readTask(void *) {
             Serial.printf(" SAK=0x%02X\n", asyncMifareInfo.sak);
             g_progTotalBlocks = asyncMifareInfo.blockCount;
 
-            // === PHASE 3: Full read for identified protocol ===
+            // === PHASE 2: Full read for identified protocol ===
             bool ok = false;
             switch (asyncMifareInfo.type) {
                 case MIFARE_CLASSIC_1K:
                 case MIFARE_CLASSIC_4K:
                 case MIFARE_CLASSIC_MINI:
                 case MIFARE_PLUS_SL1_2K:
-                case MIFARE_PLUS_SL1_4K:
-                    ok = nfcMifare.mfcReadAllBlocks(&asyncMifareInfo, preKeys1, n1, preKeys2, n2);
+                case MIFARE_PLUS_SL1_4K: {
+                    // Halt + RF-off so the ~100ms SPIFFS read doesn't time out
+                    // the active card session, then load dicts and re-activate.
+                    nfcMifare.haltTag();
+                    nfcMifare.disableRF();
+
+                    static uint8_t preKeys1[PN5180MIFARE::MAX_DICT_KEYS][6];
+                    static uint8_t preKeys2[PN5180MIFARE::MAX_DICT_KEYS][6];
+                    int n1 = files.loadDictKeys(FileManager::DICT_PROTO_MFC, preKeys1, PN5180MIFARE::MAX_DICT_KEYS);
+                    int n2 = 0;  // reserved for a second keyset (e.g. Plus AES) when needed
+                    Serial.printf("[read] MFC dict keys loaded: %d\n", n1);
+
+                    if (nfcMifare.reActivateCard(&asyncMifareInfo)) {
+                        ok = nfcMifare.mfcReadAllBlocks(&asyncMifareInfo, preKeys1, n1, preKeys2, n2);
+                    } else {
+                        Serial.println("[read] reActivate after dict load failed");
+                    }
                     break;
+                }
                 case MIFARE_ULTRALIGHT:
                     ok = nfcMifare.mfulReadAllPages(&asyncMifareInfo);
                     break;
@@ -296,9 +303,11 @@ void handleCSetUID() {
     server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
-// GET /api/dumps â€” list saved dumps
+// GET /api/dumps?folder=dumps|dicts  — list files in a SPIFFS folder
 void handleListDumps() {
-    String list = files.listDumps();
+    String folder = server.hasArg("folder") ? server.arg("folder") : "dumps";
+    if (folder != "dumps" && folder != "dicts") folder = "dumps";  // whitelist
+    String list = files.listFiles(folder.c_str());
     server.send(200, "application/json",
         "{\"status\":\"ok\",\"dumps\":" + list + "}");
 }
@@ -309,8 +318,9 @@ void handleListDumps() {
 // buffered in RAM; each chunk is written directly to SPIFFS.
 // ============================================================
 
-static File uploadFileHandle;
-static bool uploadOk = false;
+static File   uploadFileHandle;
+static bool   uploadOk     = false;
+static String uploadFolder = "dumps";
 
 static bool isValidFilename(const String &name) {
     if (name.length() == 0 || name.charAt(0) == '.') return false;
@@ -327,11 +337,13 @@ void handleUploadChunk() {
     if (upload.status == UPLOAD_FILE_START) {
         uploadOk = false;
         String name = server.hasArg("name") ? server.arg("name") : String(upload.filename.c_str());
+        uploadFolder = server.hasArg("folder") ? server.arg("folder") : "dumps";
+        if (uploadFolder != "dumps" && uploadFolder != "dicts") uploadFolder = "dumps";
         if (!isValidFilename(name)) {
             Serial.println("Upload: invalid filename");
             return;
         }
-        String path = "/dumps/" + name;
+        String path = "/" + uploadFolder + "/" + name;
         Serial.println("Upload start: " + path);
         uploadFileHandle = SPIFFS.open(path, FILE_WRITE);
         if (!uploadFileHandle) {
@@ -347,7 +359,7 @@ void handleUploadChunk() {
                 Serial.println("Upload: write error (storage full?)");
                 uploadFileHandle.close();
                 String name = server.hasArg("name") ? server.arg("name") : String(upload.filename.c_str());
-                SPIFFS.remove("/dumps/" + name);
+                SPIFFS.remove("/" + uploadFolder + "/" + name);
                 uploadFileHandle = File(); // invalidate
                 uploadOk = false;
             }
@@ -363,7 +375,7 @@ void handleUploadChunk() {
         if (uploadFileHandle) {
             String name = server.hasArg("name") ? server.arg("name") : String(upload.filename.c_str());
             uploadFileHandle.close();
-            SPIFFS.remove("/dumps/" + name);
+            SPIFFS.remove("/" + uploadFolder + "/" + name);
             Serial.println("Upload aborted");
         }
         uploadOk = false;
@@ -429,14 +441,16 @@ void handleSaveDump() {
     server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
-// DELETE /api/dump?name=xxx â€” delete dump
+// DELETE /api/dump?name=xxx[&folder=dumps|dicts]  — delete a file
 void handleDeleteDump() {
     if (!server.hasArg("name")) {
         server.send(200, "application/json",
             "{\"status\":\"error\",\"message\":\"Missing name\"}");
         return;
     }
-    if (!files.deleteDump(server.arg("name").c_str())) {
+    String folder = server.hasArg("folder") ? server.arg("folder") : "dumps";
+    if (folder != "dumps" && folder != "dicts") folder = "dumps";
+    if (!files.deleteFile(folder.c_str(), server.arg("name").c_str())) {
         server.send(200, "application/json",
             "{\"status\":\"error\",\"message\":\"Delete failed\"}");
         return;
@@ -478,6 +492,49 @@ void handleRenameDump() {
     if (!files.renameDump(oldName, newName)) {
         server.send(200, "application/json",
             "{\"status\":\"error\",\"message\":\"Rename failed\"}");
+        return;
+    }
+    server.send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+// POST /api/dicts/toggle  body = {name, enabled}  — enable/disable a dictionary
+void handleDictToggle() {
+    if (!server.hasArg("plain")) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"No body\"}");
+        return;
+    }
+    StaticJsonDocument<256> doc;
+    if (deserializeJson(doc, server.arg("plain"))) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+        return;
+    }
+    const char *name = doc["name"];
+    bool enabled     = doc["enabled"] | true;
+    if (!name) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"Missing name\"}");
+        return;
+    }
+    if (!files.setDictEnabled(name, enabled)) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"Save failed\"}");
+        return;
+    }
+    server.send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+// POST /api/dicts/order  body = ["a.txt","b.txt",...]  — reorder dictionaries
+void handleDictOrder() {
+    if (!server.hasArg("plain")) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"No body\"}");
+        return;
+    }
+    if (!files.setDictOrder(server.arg("plain"))) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"Invalid order\"}");
         return;
     }
     server.send(200, "application/json", "{\"status\":\"ok\"}");
@@ -567,14 +624,16 @@ void handleSpiffsInfo() {
     server.send(200, "application/json", json);
 }
 
-// GET /api/rawfile?name=xxx â€” serve raw file content for download
+// GET /api/rawfile?name=xxx[&folder=dumps|dicts]  — serve raw file for download
 void handleRawFile() {
     if (!server.hasArg("name")) {
         server.send(400, "text/plain", "Missing name");
         return;
     }
-    String name = server.arg("name");
-    String content = files.loadDump(name.c_str());
+    String name   = server.arg("name");
+    String folder = server.hasArg("folder") ? server.arg("folder") : "dumps";
+    if (folder != "dumps" && folder != "dicts") folder = "dumps";
+    String content = files.loadFile(folder.c_str(), name.c_str());
     if (content.isEmpty()) {
         server.send(404, "text/plain", "Not found");
         return;
@@ -731,6 +790,8 @@ void setup() {
     server.on("/api/dump", HTTP_POST, handleSaveDump);
     server.on("/api/dump", HTTP_DELETE, handleDeleteDump);
     server.on("/api/dump/rename", HTTP_POST, handleRenameDump);
+    server.on("/api/dicts/toggle", HTTP_POST, handleDictToggle);
+    server.on("/api/dicts/order",  HTTP_POST, handleDictOrder);
     server.on("/api/emulate/start", HTTP_POST, handleEmulateStart);
     server.on("/api/emulate/stop", HTTP_POST, handleEmulateStop);
     server.on("/api/emulate/status", HTTP_GET, handleEmulateStatus);

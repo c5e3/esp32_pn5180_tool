@@ -133,7 +133,7 @@ public:
     // Dictionary key loading
     // MAX_DICT_KEYS is exposed here so callers can pre-size their arrays before RF activation
     static constexpr int MAX_DICT_KEYS = 500;
-    int loadKeysFromFile(const char *path, uint8_t (*keys)[6], int maxKeys);
+    static int loadKeysFromFile(const char *path, uint8_t (*keys)[6], int maxKeys);
 
     // Utility
     static const char *typeString(MifareType t);

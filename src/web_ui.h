@@ -98,6 +98,22 @@ input[type="radio"]{accent-color:#00d4ff}
 .modal h3{color:#cc8800;margin-bottom:12px;font-size:1.1em}
 .modal p{margin-bottom:16px;font-size:0.9em;color:#ccc}
 .modal .btn-group{display:flex;gap:8px;justify-content:center}
+/* Collapsible section (Tools tab) */
+.collapse-hdr{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;padding:10px 14px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:8px;margin-bottom:8px}
+.collapse-hdr:hover{border-color:#00d4ff}
+.collapse-hdr .title{color:#00d4ff;font-weight:600;font-size:1em}
+.collapse-hdr .arrow{color:#00d4ff;transition:transform 0.2s}
+.collapse-hdr.open .arrow{transform:rotate(90deg)}
+.collapse-body{display:none;padding:0 4px 8px}
+.collapse-body.open{display:block}
+.dict-toggle{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:#0f0f1a;border-radius:5px;margin-bottom:4px;gap:8px}
+.dict-toggle .name{font-family:'Consolas',monospace;font-size:0.85em;color:#00d4ff;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dict-toggle .meta{font-size:0.72em;color:#666;white-space:nowrap}
+.dict-toggle .drag-handle{cursor:grab;color:#555;font-size:1.1em;padding:0 4px;user-select:none}
+.dict-toggle .drag-handle:hover{color:#00d4ff}
+.dict-toggle.dragging{opacity:0.4}
+.dict-toggle.drop-above{border-top:2px solid #00d4ff;margin-top:2px}
+.dict-toggle.drop-below{border-bottom:2px solid #00d4ff;margin-bottom:2px}
 </style>
 </head>
 <body>
@@ -128,6 +144,7 @@ input[type="radio"]{accent-color:#00d4ff}
   <button class="tab-btn active" data-tab="read" onclick="switchTab('read')">Read</button>
   <button class="tab-btn" data-tab="write" onclick="switchTab('write')">Write</button>
   <button class="tab-btn" data-tab="emulate" onclick="switchTab('emulate')">Emulate</button>
+  <button class="tab-btn" data-tab="tools" onclick="switchTab('tools')">Tools</button>
 </div>
 
 <!-- ==================== READ TAB ==================== -->
@@ -226,6 +243,33 @@ input[type="radio"]{accent-color:#00d4ff}
       </div>
     </div>
     <p style="margin-top:10px;font-size:0.75em;color:#555">Remove any physical tag from the reader before emulating. The PN5180 antenna will act as the emulated tag.</p>
+  </div>
+
+</div>
+
+<!-- ==================== TOOLS TAB ==================== -->
+<div id="tab-tools" class="tab-content">
+
+  <!-- Key Manager -->
+  <div class="collapse-hdr" id="keyMgrHdr" onclick="toggleCollapse('keyMgr')">
+    <span class="title">🔑 Key Manager</span>
+    <span class="arrow">▶</span>
+  </div>
+  <div class="collapse-body" id="keyMgrBody">
+    <div class="card">
+      <h2>Dictionaries</h2>
+      <p style="font-size:0.78em;color:#888;margin-bottom:8px">
+        Files named <code>&lt;protocol&gt;_&lt;name&gt;.txt</code> in <code>/dicts/</code>
+        (e.g. <code>mfc_std.txt</code>) are auto-discovered. Disable a dictionary to skip it during reads.
+      </p>
+      <div class="dump-list" id="dictList">
+        <div style="color:#666;text-align:center;padding:10px">Loading…</div>
+      </div>
+      <div style="margin-top:8px">
+        <input type="file" id="dictUploadInput" style="display:none" onchange="doUploadDict(this)">
+        <button class="btn btn-primary btn-sm" onclick="document.getElementById('dictUploadInput').click()">Upload Dictionary</button>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -354,7 +398,20 @@ function switchTab(tab) {
     sec.style.display = '';
     loadEmuDumpList();
     updateSharedUI();
+  } else if (tab === 'tools') {
+    sec.style.display = 'none';
+    loadDictList();
   }
+}
+
+// ========== Collapsible ==========
+function toggleCollapse(name) {
+  const hdr = document.getElementById(name + 'Hdr');
+  const body = document.getElementById(name + 'Body');
+  const open = !hdr.classList.contains('open');
+  hdr.classList.toggle('open', open);
+  body.classList.toggle('open', open);
+  if (open && name === 'keyMgr') loadDictList();
 }
 
 // ========== Shared Data ==========
@@ -771,13 +828,18 @@ async function doSave() {
     };
   }
   const r = await api('POST', '/api/dump?name=' + encodeURIComponent(name), dump);
-  if (r) { toast('Saved: ' + name, true); refreshSpiffs(); }
+  if (r) {
+    toast('Saved: ' + name, true);
+    await loadDumpList();
+    await loadEmuDumpList();
+    refreshSpiffs();
+  }
 }
 
 // ========== File Manager ==========
 
 async function loadDumpList() {
-  const r = await api('GET', '/api/dumps');
+  const r = await api('GET', '/api/dumps?folder=dumps');
   if (!r) return;
   const list = r.dumps || [];
   const el = document.getElementById('dumpList');
@@ -866,7 +928,7 @@ async function confirmRename() {
 let emuPolling = null;
 
 async function loadEmuDumpList() {
-  const r = await api('GET', '/api/dumps');
+  const r = await api('GET', '/api/dumps?folder=dumps');
   if (!r) return;
   const list = r.dumps || [];
   const el = document.getElementById('emuDumpList');
@@ -879,8 +941,10 @@ async function loadEmuDumpList() {
     const name = f.name;
     const sizeStr = formatSize(f.size);
     const isJson = name.toLowerCase().endsWith('.json');
+    const typeTag = f.type ? '<span class="tag-badge ' + f.type + '">' + f.type + '</span>' : '';
     html += '<div class="dump-item">' +
       '<span class="dump-name" title="' + name + '">' + name + '</span>' +
+      typeTag +
       '<span style="font-size:0.75em;color:#555;margin-left:6px;white-space:nowrap">' + sizeStr + '</span>' +
       '<div style="display:flex;gap:4px;margin-left:auto">' +
       (isJson ? '<button class="btn btn-primary btn-sm" onclick="doEmuLoad(\''+name+'\')">Load</button>' : '') +
@@ -1032,6 +1096,146 @@ async function doUpload(input) {
     toast('Uploaded: ' + name, true);
     await loadDumpList();
     await loadEmuDumpList();
+    refreshSpiffs();
+  } catch(e) {
+    toast('Upload error: ' + e.message, false);
+  } finally {
+    setBusy(false);
+  }
+}
+
+// ========== Key Manager (Tools tab) ==========
+
+async function loadDictList() {
+  const r = await api('GET', '/api/dumps?folder=dicts');
+  if (!r) return;
+  const list = r.dumps || [];
+  const el = document.getElementById('dictList');
+  if (!list.length) {
+    el.innerHTML = '<div style="color:#666;text-align:center;padding:10px">No dictionaries.</div>';
+    return;
+  }
+  let html = '';
+  for (const f of list) {
+    const name = f.name;
+    const enabled = f.enabled !== false;
+    const sizeStr = formatSize(f.size);
+    const safe = name.replace(/'/g, "\\'");
+    html += '<div class="dict-toggle" draggable="true" data-name="' + name + '">' +
+      '<span class="drag-handle" title="Drag to reorder">⋮⋮</span>' +
+      '<label class="toggle" title="Enable/disable for reads">' +
+        '<input type="checkbox"' + (enabled ? ' checked' : '') +
+          ' onchange="toggleDict(\'' + safe + '\', this.checked)">' +
+        '<span class="toggle-slider"></span>' +
+      '</label>' +
+      '<span class="name" title="' + name + '">' + name + '</span>' +
+      '<span class="meta">' + sizeStr + '</span>' +
+      '<button class="btn btn-success btn-sm" onclick="doDownloadDict(\'' + safe + '\')">⬇</button>' +
+      '<button class="btn btn-danger btn-sm" onclick="doDeleteDict(\'' + safe + '\')">✕</button>' +
+      '</div>';
+  }
+  el.innerHTML = html;
+  attachDictDnD();
+}
+
+// ----- Drag-and-drop reordering -----
+let dictDragSrc = null;
+
+function attachDictDnD() {
+  const list = document.getElementById('dictList');
+  list.querySelectorAll('.dict-toggle').forEach(row => {
+    row.addEventListener('dragstart', e => {
+      dictDragSrc = row;
+      row.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      // Required for Firefox
+      e.dataTransfer.setData('text/plain', row.dataset.name);
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      list.querySelectorAll('.dict-toggle').forEach(r => {
+        r.classList.remove('drop-above', 'drop-below');
+      });
+      dictDragSrc = null;
+    });
+    row.addEventListener('dragover', e => {
+      e.preventDefault();
+      if (!dictDragSrc || dictDragSrc === row) return;
+      const rect = row.getBoundingClientRect();
+      const above = (e.clientY - rect.top) < rect.height / 2;
+      row.classList.toggle('drop-above', above);
+      row.classList.toggle('drop-below', !above);
+    });
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('drop-above', 'drop-below');
+    });
+    row.addEventListener('drop', async e => {
+      e.preventDefault();
+      if (!dictDragSrc || dictDragSrc === row) return;
+      const rect = row.getBoundingClientRect();
+      const above = (e.clientY - rect.top) < rect.height / 2;
+      row.classList.remove('drop-above', 'drop-below');
+      if (above) row.parentNode.insertBefore(dictDragSrc, row);
+      else       row.parentNode.insertBefore(dictDragSrc, row.nextSibling);
+      await saveDictOrder();
+    });
+  });
+}
+
+async function saveDictOrder() {
+  const order = Array.from(document.querySelectorAll('#dictList .dict-toggle'))
+    .map(r => r.dataset.name);
+  const r = await api('POST', '/api/dicts/order', order);
+  if (r) toast('Order saved', true);
+  else loadDictList();  // revert on failure
+}
+
+async function toggleDict(name, enabled) {
+  const r = await api('POST', '/api/dicts/toggle', {name, enabled});
+  if (r) toast((enabled ? 'Enabled: ' : 'Disabled: ') + name, true);
+  else loadDictList();  // revert on failure
+}
+
+async function doDeleteDict(name) {
+  if (!confirm('Delete dictionary "' + name + '"?')) return;
+  const r = await api('DELETE', '/api/dump?folder=dicts&name=' + encodeURIComponent(name));
+  if (r) { toast('Deleted: ' + name, true); loadDictList(); refreshSpiffs(); }
+}
+
+async function doDownloadDict(name) {
+  if (busy) return;
+  try {
+    const r = await fetch('/api/rawfile?folder=dicts&name=' + encodeURIComponent(name));
+    if (!r.ok) { toast('Download failed', false); return; }
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch(e) {
+    toast('Download error: ' + e.message, false);
+  }
+}
+
+async function doUploadDict(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  const name = file.name;
+  if (!/^[a-zA-Z0-9]+_[a-zA-Z0-9_\-]+\.txt$/i.test(name) || name.toLowerCase() === 'config.json') {
+    toast('Filename must match <protocol>_<name>.txt', false);
+    return;
+  }
+  setBusy(true, 'Uploading...');
+  try {
+    const fd = new FormData();
+    fd.append('file', file, name);
+    const r = await fetch('/api/upload?folder=dicts&name=' + encodeURIComponent(name), {method:'POST', body:fd});
+    const j = await r.json();
+    if (j.status !== 'ok') { toast(j.message || 'Upload failed', false); return; }
+    toast('Uploaded: ' + name, true);
+    await loadDictList();
     refreshSpiffs();
   } catch(e) {
     toast('Upload error: ' + e.message, false);

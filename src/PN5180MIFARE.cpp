@@ -502,14 +502,18 @@ bool PN5180MIFARE::detectTag(MifareTagInfo *info) {
     for (uint8_t i = 0; i < uidLen; i++) Serial.printf(" %02X", info->uid[i]);
     Serial.printf(" SAK=0x%02X\n", sak);
 
-    if      (sak == SAK_MFUL)          info->type = MIFARE_ULTRALIGHT;
-    else if (sak == SAK_MFC_MINI)      info->type = MIFARE_CLASSIC_MINI;
-    else if (sak == SAK_MFC_1K)        info->type = MIFARE_CLASSIC_1K;
-    else if (sak == SAK_MFC_4K)        info->type = MIFARE_CLASSIC_4K;
-    else if (sak == SAK_MFPLUS_SL1_2K) info->type = MIFARE_PLUS_SL1_2K;
-    else if (sak == SAK_MFPLUS_SL1_4K) info->type = MIFARE_PLUS_SL1_4K;
-    else if (sak == SAK_MFPLUS_SL2)    info->type = MIFARE_PLUS_SL2;
-    else                               info->type = MIFARE_UNKNOWN;
+    // Per ISO/IEC 14443-3, bit 7 (0x80) of SAK is RFU/proprietary and must be
+    // ignored for type discrimination. Some Infineon (SLE66) MIFARE Classic 1K
+    // and many Chinese clones report SAK=0x88 instead of 0x08.
+    uint8_t sakType = sak & 0x7F;
+    if      (sakType == SAK_MFUL)          info->type = MIFARE_ULTRALIGHT;
+    else if (sakType == SAK_MFC_MINI)      info->type = MIFARE_CLASSIC_MINI;
+    else if (sakType == SAK_MFC_1K)        info->type = MIFARE_CLASSIC_1K;
+    else if (sakType == SAK_MFC_4K)        info->type = MIFARE_CLASSIC_4K;
+    else if (sakType == SAK_MFPLUS_SL1_2K) info->type = MIFARE_PLUS_SL1_2K;
+    else if (sakType == SAK_MFPLUS_SL1_4K) info->type = MIFARE_PLUS_SL1_4K;
+    else if (sakType == SAK_MFPLUS_SL2)    info->type = MIFARE_PLUS_SL2;
+    else                                   info->type = MIFARE_UNKNOWN;
 
     switch (info->type) {
         case MIFARE_CLASSIC_1K:
@@ -752,6 +756,7 @@ bool PN5180MIFARE::mfcReadBlock(uint8_t block, uint8_t *out16) {
 // Dictionary loading
 // ---------------------------------------------------------------------------
 
+// static — pure SPIFFS parser, no hardware access
 int PN5180MIFARE::loadKeysFromFile(const char *path, uint8_t (*keys)[6], int maxKeys) {
     if (!path) return 0;
     File f = SPIFFS.open(path, "r");
