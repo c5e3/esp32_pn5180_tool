@@ -22,8 +22,8 @@
 #define REG_IRQ_STATUS      0x02
 #define REG_IRQ_CLEAR       0x03
 #define REG_RX_STATUS       0x13
-#define REG_TX_CONFIG        0x18
-#define REG_RF_STATUS       0x1D
+#define REG_TX_CONFIG       0x18
+#define REG_RF_STATUS       0x1D   // bits [26:24] = transceive state
 
 // IRQ Status bits (§11.9.1 Table 76)
 #define RX_IRQ_STAT         (1U << 0)
@@ -31,8 +31,9 @@
 #define IDLE_IRQ_STAT       (1U << 2)
 #define RFOFF_DET_IRQ_STAT  (1U << 6)
 #define RFON_DET_IRQ_STAT   (1U << 7)
-#define TX_RFOFF_IRQ_STAT   (1U << 8)
-#define TX_RFON_IRQ_STAT    (1U << 9)
+#define TX_RFOFF_IRQ_STAT       (1U << 8)
+#define TX_RFON_IRQ_STAT        (1U << 9)
+#define GENERAL_ERROR_IRQ_STAT  (1U << 17)  // auth failure / protocol error / CRC error
 
 // ISO 15693 Command Codes
 #define ISO15693_INVENTORY          0x01
@@ -108,12 +109,11 @@ public:
     void teardownEmulation();
     void emulationLoop();
 
-private:
-    uint8_t _nss, _busy, _rst;
-    SPISettings _spiSettings;
-    uint8_t _rxBuf[RX_BUFFER_SIZE];
-    uint16_t _timeout = 1000;
+    // RF field control (public so callers can manage field lifetime directly)
+    bool activateRF();
+    bool disableRF();
 
+protected:
     // SPI communication (NXP §11.4.1)
     bool spiSend(uint8_t *buf, size_t len);
     bool spiReceive(uint8_t *buf, size_t len);
@@ -129,17 +129,21 @@ private:
 
     // RF field control
     void loadISO15693Config();
-    bool activateRF();
-    bool disableRF();
     void setIdle();
     void activateTransceive();
     void sendEndOfFrame();
     bool readEEPROM(uint8_t addr, uint8_t *buf, uint8_t len);
 
-    // ISO 15693 transceive: send command, wait for response, read response
+    // ISO 15693 transceive
     bool transceive(uint8_t *txData, uint8_t txLen,
                     uint8_t *rxBuf, uint8_t rxBufSize,
                     uint16_t *rxLen, uint16_t timeoutMs = 500);
+
+private:
+    uint8_t _nss, _busy, _rst;
+    SPISettings _spiSettings;
+    uint8_t _rxBuf[RX_BUFFER_SIZE];
+    uint16_t _timeout = 1000;
 
     // Mid-level ISO 15693 commands (RF must already be on)
     bool getSystemInfo(uint8_t *uid, ISO15693TagInfo *info);

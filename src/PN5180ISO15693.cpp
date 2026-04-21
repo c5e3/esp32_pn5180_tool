@@ -49,10 +49,14 @@ bool PN5180ISO15693::spiSend(uint8_t *buf, size_t len) {
     digitalWrite(_nss, LOW);
     delayMicroseconds(2);
     SPI.transfer(buf, len);
+    // PN5180 SPI protocol (section 11.4.1): NSS must stay LOW until BUSY goes HIGH.
+    // For short commands (e.g. 3-byte SEND_DATA), BUSY may not go HIGH before NSS
+    // if we deassert immediately — causing the command to be aborted (GENERAL_ERROR).
+    waitBusy();                  // wait BUSY=HIGH (chip has accepted command)
     digitalWrite(_nss, HIGH);
     SPI.endTransaction();
-    delay(1);
-    if (!waitReady()) return false;  // wait for BUSY HIGH then LOW
+    delayMicroseconds(200);      // PN5180 min NSS-high recovery; 200µs >> 100ns spec, safe on any wiring
+    if (!waitReady()) return false;  // wait for BUSY LOW (command processed)
     return true;
 }
 
@@ -63,9 +67,10 @@ bool PN5180ISO15693::spiReceive(uint8_t *buf, size_t len) {
     digitalWrite(_nss, LOW);
     delayMicroseconds(2);
     SPI.transfer(buf, len);
+    waitBusy();                  // wait BUSY=HIGH before NSS deassert (same protocol as spiSend)
     digitalWrite(_nss, HIGH);
     SPI.endTransaction();
-    delay(1);
+    delayMicroseconds(200);
     if (!waitReady()) return false;
     return true;
 }

@@ -41,9 +41,27 @@ input[type="radio"]{accent-color:#00d4ff}
 .block-row{display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #1a1a2e}
 .block-num{color:#666;font-family:'Consolas',monospace;font-size:0.8em;min-width:36px;text-align:right}
 .block-data{background:transparent;border:1px solid transparent;color:#e0e0e0;padding:3px 6px;border-radius:3px;font-family:'Consolas',monospace;font-size:0.9em;flex:1;letter-spacing:1px;text-transform:uppercase}
-.block-data:focus{border-color:#00d4ff;background:#0a0a15}
+.block-data:focus{outline:none;border-color:#00d4ff;background:#0a0a15}
 .block-data[readonly]{color:#888;cursor:default}
 .block-data[readonly]:focus{border-color:transparent;background:transparent}
+/* MIFARE block coloring */
+.block-row.blk-mfc-block0 .block-data{color:#ffd700;font-weight:bold}
+.block-row.blk-mfc-block0 .block-num{color:#ffd700}
+.block-row.blk-mfc-trailer .block-data{white-space:nowrap;overflow:hidden;line-height:1.2}
+.block-row.blk-mfc-trailer .block-data .mfc-seg-key   {color:#4cff91;font-weight:bold}
+.block-row.blk-mfc-trailer .block-data .mfc-seg-access{color:#ffd700;font-weight:bold}
+.block-row.blk-mfc-unread .block-data{color:#444;font-style:italic}
+.block-row.blk-mfc-unread .block-num{color:#333}
+/* Tag type badge */
+.tag-badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:0.7em;font-weight:bold;margin-left:6px;vertical-align:middle;text-transform:uppercase;letter-spacing:0.5px}
+.tag-badge.ISO15693{background:#004d66;color:#00d4ff}
+.tag-badge.MFC1K{background:#2a1a00;color:#ffa500}
+.tag-badge.MFC4K{background:#1a2a00;color:#aaff44}
+.tag-badge.MFCMINI{background:#2a2000;color:#ffdd44}
+.tag-badge.MFUL{background:#001a2a;color:#44ddff}
+.tag-badge.MFPLUS2K,.tag-badge.MFPLUS4K{background:#1a0026;color:#cc77ff}
+.tag-badge.MFPLUS_SL2{background:#260013;color:#ff77aa}
+.tag-badge.UNKNOWN{background:#2a2a2a;color:#888}
 .dump-list{max-height:200px;overflow-y:auto}
 .dump-item{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#0f0f1a;border-radius:5px;margin-bottom:4px}
 .dump-name{font-family:'Consolas',monospace;font-size:0.9em;color:#00d4ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
@@ -115,10 +133,16 @@ input[type="radio"]{accent-color:#00d4ff}
 <!-- ==================== READ TAB ==================== -->
 <div id="tab-read" class="tab-content active">
 
-  <!-- Read Button -->
+  <!-- Read Button + Progress -->
   <div class="card">
     <h2>Tag Operations</h2>
-    <button class="btn btn-primary" onclick="doRead()">Read Tag</button>
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="btn btn-primary" onclick="doRead()" style="flex-shrink:0">Read Tag</button>
+      <div id="readProgress" style="flex:1;position:relative;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:6px;height:34px;overflow:hidden">
+        <div id="readProgressFill" style="position:absolute;top:0;left:0;bottom:0;background:#0066cc;width:0%;transition:width 0.2s"></div>
+        <div id="readProgressText" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.82em;color:#bbb;font-family:Consolas,monospace;text-shadow:0 1px 2px #000">Idle</div>
+      </div>
+    </div>
   </div>
 
   <!-- Save -->
@@ -126,7 +150,7 @@ input[type="radio"]{accent-color:#00d4ff}
     <h2>Save Dump</h2>
     <div class="form-row">
       <label>Name:</label>
-      <input type="text" id="saveDumpName" placeholder="my_tag" style="flex:1">
+      <input type="text" id="saveDumpName" placeholder="tag.json" style="flex:1">
       <button class="btn btn-success btn-sm" onclick="doSave()">Save</button>
       <button class="btn btn-primary btn-sm" onclick="doDownloadCurrent()">Download</button>
     </div>
@@ -163,8 +187,8 @@ input[type="radio"]{accent-color:#00d4ff}
       <div class="form-row">
         <label>Version:</label>
         <div class="radio-group">
-          <label><input type="radio" name="uidver" value="v1" checked> v1 (Gen1)</label>
-          <label><input type="radio" name="uidver" value="v2"> v2 (Gen2)</label>
+          <label><input type="radio" name="uidver" value="v1">Gen1</label>
+          <label><input type="radio" name="uidver" value="v2" checked>Gen2</label>
         </div>
       </div>
     </div>
@@ -215,6 +239,7 @@ input[type="radio"]{accent-color:#00d4ff}
       <input type="text" id="sharedUid" class="uid-input" maxlength="16" value="">
     </div>
     <div class="info-grid">
+      <div class="info-item">Type: <span id="sharedInfoType">-</span></div>
       <div class="info-item">Blocks: <span id="sharedInfoBlocks">-</span></div>
       <div class="info-item">Block Size: <span id="sharedInfoBlockSize">-</span></div>
       <div class="info-item">DSFID: <input type="text" id="sharedInfoDsfid" maxlength="2" style="width:3em;font-family:'Consolas',monospace;font-size:0.9em;text-transform:uppercase" value="00"></div>
@@ -249,7 +274,7 @@ input[type="radio"]{accent-color:#00d4ff}
   <div class="modal">
     <h3>Rename File</h3>
     <div class="form-row" style="justify-content:center;margin-bottom:16px">
-      <input type="text" id="renameInput" placeholder="new_name.json" style="width:220px">
+      <input type="text" id="renameInput" style="width:220px">
     </div>
     <input type="hidden" id="renameOldName">
     <div class="btn-group">
@@ -357,6 +382,12 @@ function updateSharedUI() {
   const uid = document.getElementById('sharedUid');
   if (!uid) return;
   uid.value = tagData.uid;
+  const typeEl = document.getElementById('sharedInfoType');
+  if (typeEl) {
+    typeEl.innerHTML = tagData.type
+      ? '<span class="tag-badge ' + tagData.type + '">' + tagData.type + '</span>'
+      : '-';
+  }
   document.getElementById('sharedInfoBlocks').textContent = tagData.blockCount || '-';
   document.getElementById('sharedInfoBlockSize').textContent = tagData.blockSize || '-';
   document.getElementById('sharedInfoDsfid').value = tagData.dsfid || '00';
@@ -372,13 +403,83 @@ function renderBlocks(gridId, srcBlocks) {
     grid.innerHTML = '<div style="color:#666;text-align:center;padding:20px">No data loaded.</div>';
     return;
   }
+  const type = tagData.type || 'ISO15693';
+  const isMFC = type.startsWith('MFC') || type.startsWith('MFPLUS');
+  const isMFUL = (type === 'MFUL');
+  const blockRead = tagData.blockRead || [];
+  const keyUsed = tagData.keyUsed || [];
+
+  // Build sector layout lookup for MIFARE Classic
+  function sectorOfBlock(b) {
+    if (type === 'MFC4K' || type === 'MFPLUS4K') {
+      return b < 128 ? Math.floor(b/4) : 32 + Math.floor((b-128)/16);
+    }
+    return Math.floor(b/4);
+  }
+  function sectorTrailer(s) {
+    if ((type === 'MFC4K' || type === 'MFPLUS4K') && s >= 32) return 128 + (s-32)*16 + 15;
+    return s*4 + 3;
+  }
+  function sectorFirstBlock(s) {
+    if ((type === 'MFC4K' || type === 'MFPLUS4K') && s >= 32) return 128 + (s-32)*16;
+    return s*4;
+  }
+
   let html = '';
   for (let i = 0; i < blocks.length; i++) {
-    const formatted = formatBlock(blocks[i]);
-    html += '<div class="block-row">' +
+    let rowClass = 'block-row';
+    let label = '';
+    let isTrailer = false;
+
+    if (isMFC) {
+      const isRead = blockRead[i] !== false;  // default true for loaded data
+      if (!isRead) {
+        rowClass += ' blk-mfc-unread';
+      } else if (i === 0) {
+        rowClass += ' blk-mfc-block0';
+        label = ' <span style="font-size:0.7em;color:#ffd700">[MFR]</span>';
+      } else {
+        const s = sectorOfBlock(i);
+        const trailer = sectorTrailer(s);
+        if (i === trailer) {
+          isTrailer = true;
+          rowClass += ' blk-mfc-trailer';
+          const ku = keyUsed[s] || 0;
+          label = ' <span style="font-size:0.7em;color:#888">[Sec' + s + ' trailer' +
+            (ku === 1 ? ' <span style="color:#4cff91">KeyA</span>' :
+             ku === 2 ? ' <span style="color:#ff5c5c">KeyB</span>' : '') + ']</span>';
+        }
+      }
+    }
+
+    let dataHtml;
+    if (isTrailer) {
+      // contenteditable div with colored spans: [KeyA 6B][AccessBits+GPB 4B][KeyB 6B]
+      dataHtml = '<div class="block-data" contenteditable="true" spellcheck="false" ' +
+                 'data-idx="'+i+'" ' +
+                 'onkeydown="if(event.key===\'Enter\')event.preventDefault()" ' +
+                 'oninput="onTrailerEdit(this)">' +
+                 trailerColoredHtml(blocks[i]) +
+                 '</div>';
+    } else {
+      dataHtml = '<input type="text" class="block-data" data-idx="'+i+'" value="'+formatBlock(blocks[i])+'" oninput="onBlockEdit(this)">';
+    }
+
+    html += '<div class="' + rowClass + '">' +
       '<span class="block-num">#' + String(i).padStart(2,'0') + '</span>' +
-      '<input type="text" class="block-data" data-idx="'+i+'" value="'+formatted+'" oninput="onBlockEdit(this)">' +
+      dataHtml +
+      label +
       '</div>';
+
+    // After MFC trailer, show sector separator
+    if (isMFC && i > 0) {
+      const s = sectorOfBlock(i);
+      const trailer = sectorTrailer(s);
+      const nextS = sectorOfBlock(i+1);
+      if (i === trailer && i < blocks.length - 1) {
+        html += '<div style="height:3px;background:#1a1a2e;margin:2px 0"></div>';
+      }
+    }
   }
   grid.innerHTML = html;
 }
@@ -386,9 +487,60 @@ function renderBlocks(gridId, srcBlocks) {
 function onBlockEdit(el) {
   const idx = parseInt(el.dataset.idx);
   const raw = el.value.replace(/\s/g,'').toUpperCase();
-  if (/^[0-9A-F]*$/.test(raw)) {
-    tagData.blocks[idx] = raw;
+  if (/^[0-9A-F]*$/.test(raw)) tagData.blocks[idx] = raw;
+}
+
+// ---- Sector-trailer colored editor ----
+// Re-renders a contenteditable div with three colored spans on each keystroke,
+// restoring the caret by counting hex chars (spaces/non-hex ignored) from the start.
+
+function trailerColoredHtml(hex) {
+  const keyA = (hex.slice(0, 12).match(/.{1,2}/g) || []).join(' ');
+  const acc  = (hex.slice(12, 20).match(/.{1,2}/g) || []).join(' ');
+  const keyB = (hex.slice(20, 32).match(/.{1,2}/g) || []).join(' ');
+  const parts = [];
+  if (keyA) parts.push('<span class="mfc-seg-key">' + keyA + '</span>');
+  if (acc)  parts.push('<span class="mfc-seg-access">' + acc + '</span>');
+  if (keyB) parts.push('<span class="mfc-seg-key">' + keyB + '</span>');
+  return parts.join(' ') || '<span class="mfc-seg-key">​</span>';
+}
+
+function getTrailerCaretHex(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return 0;
+  const r = sel.getRangeAt(0).cloneRange();
+  r.selectNodeContents(el);
+  r.setEnd(sel.getRangeAt(0).endContainer, sel.getRangeAt(0).endOffset);
+  return r.toString().replace(/[^0-9A-Fa-f]/g,'').length;
+}
+
+function setTrailerCaretHex(el, pos) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+  let node, remaining = pos;
+  while ((node = walker.nextNode())) {
+    const t = node.nodeValue;
+    for (let i = 0; i <= t.length; i++) {
+      if (remaining === 0) {
+        const r = document.createRange();
+        r.setStart(node, i); r.collapse(true);
+        const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+        return;
+      }
+      if (i < t.length && /[0-9A-Fa-f]/.test(t[i])) remaining--;
+    }
   }
+  const r = document.createRange();
+  r.selectNodeContents(el); r.collapse(false);
+  const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+}
+
+function onTrailerEdit(el) {
+  const idx = parseInt(el.dataset.idx);
+  const caretBefore = getTrailerCaretHex(el);
+  const hex = (el.textContent || '').replace(/[^0-9A-Fa-f]/g,'').toUpperCase().slice(0, 32);
+  tagData.blocks[idx] = hex;
+  el.innerHTML = trailerColoredHtml(hex);
+  setTrailerCaretHex(el, Math.min(caretBefore, hex.length));
 }
 
 function collectMeta() {
@@ -405,7 +557,8 @@ function collectMeta() {
 function collectBlocks() {
   document.querySelectorAll('#sharedBlockGrid .block-data').forEach(el => {
     const idx = parseInt(el.dataset.idx);
-    const raw = el.value.replace(/\s/g,'').toUpperCase();
+    const text = (el.tagName === 'DIV') ? (el.textContent || '') : el.value;
+    const raw = text.replace(/[^0-9A-Fa-f]/g,'').toUpperCase();
     if (/^[0-9A-F]*$/.test(raw)) tagData.blocks[idx] = raw;
   });
 }
@@ -431,19 +584,81 @@ function confirmWrite() {
 
 // ========== API Calls ==========
 
+function setReadProgress(pct, text) {
+  const fill = document.getElementById('readProgressFill');
+  const txt  = document.getElementById('readProgressText');
+  if (fill) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  if (txt)  txt.textContent = text;
+}
+
+function updateReadProgress(j) {
+  const phase = j.phase | 0;
+  const block = j.block | 0;
+  const total = j.totalBlocks | 0;
+  const kt    = j.keyType;
+  if (phase === 1 || total <= 0) {
+    setReadProgress(3, 'Detecting tag...');
+    return;
+  }
+  const pct = Math.round((block + 1) / total * 100);
+  const keyStr = (kt === 0) ? 'Key A' : (kt === 1) ? 'Key B' : '-';
+  const verb = (phase === 3) ? 'Read' : 'Auth';
+  setReadProgress(pct, verb + ' block ' + block + '/' + (total - 1) + ' · ' + keyStr + ' · ' + pct + '%');
+}
+
 async function doRead() {
-  const r = await api('GET', '/api/read');
-  if (!r || !r.data) return;
-  const d = r.data;
-  tagData.uid = d.uid || '';
-  tagData.dsfid = d.dsfid || '00';
-  tagData.afi = d.afi || '00';
-  tagData.icRef = d.icRef || '00';
-  tagData.blockSize = d.blockSize || 4;
-  tagData.blockCount = d.blockCount || 0;
-  tagData.blocks = dataHexToBlocks(d.data || '', tagData.blockSize);
-  updateSharedUI();
-  toast('Read ' + tagData.blockCount + ' blocks', true);
+  if (busy) return;
+  setBusy(true);
+  setReadProgress(1, 'Starting...');
+  try {
+    let j;
+    // First call kicks off the background task; subsequent calls poll.
+    while (true) {
+      const r = await fetch('/api/read');
+      j = await r.json();
+      if (j.status !== 'running') break;
+      updateReadProgress(j);
+      await new Promise(res => setTimeout(res, 200));
+    }
+    if (j.status === 'error') {
+      setReadProgress(0, j.message || 'Error');
+      toast(j.message || 'Error', false);
+      return;
+    }
+    if (!j.data) { setReadProgress(0, 'Idle'); return; }
+
+    const d = j.data;
+    tagData.type = d.type || 'ISO15693';
+    tagData.uid = d.uid || '';
+    tagData.blockCount = d.blockCount || 0;
+    tagData.blockRead = d.blockRead ? d.blockRead.split('').map(c => c === '1') : [];
+    tagData.keyUsed = d.keyUsed ? d.keyUsed.split('').map(c => parseInt(c)) : [];
+
+    const isMFC = tagData.type.startsWith('MFC') || tagData.type.startsWith('MFPLUS');
+    const isMFUL = tagData.type === 'MFUL';
+
+    if (isMFC || isMFUL) {
+      tagData.blockSize = d.blockSize || (isMFUL ? 4 : 16);
+      tagData.dsfid = '00'; tagData.afi = '00'; tagData.icRef = '00';
+    } else {
+      tagData.blockSize = d.blockSize || 4;
+      tagData.dsfid = d.dsfid || '00';
+      tagData.afi = d.afi || '00';
+      tagData.icRef = d.icRef || '00';
+    }
+    tagData.blocks = dataHexToBlocks(d.data || '', tagData.blockSize);
+    updateSharedUI();
+    const unread = tagData.blockRead.filter(v => !v).length;
+    const msg = 'Read ' + tagData.type + ': ' + tagData.blockCount + ' blocks' +
+      (unread > 0 ? ' (' + unread + ' locked)' : '');
+    setReadProgress(100, 'Done · ' + tagData.blockCount + ' blocks' + (unread > 0 ? ' (' + unread + ' locked)' : ''));
+    toast(msg, true);
+  } catch(e) {
+    setReadProgress(0, 'Error');
+    toast('Connection error: ' + e.message, false);
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function doWrite() {
@@ -527,16 +742,34 @@ async function doSave() {
   if (!/^[a-zA-Z0-9_\-]+$/.test(stem)) { toast('Name: letters, numbers, _ - only', false); return; }
   if (!tagData.blocks.length) { toast('No data to save', false); return; }
   const name = stem + '.json';
-  const dump = {
-    type: 'ISO15693',
-    uid: tagData.uid,
-    dsfid: tagData.dsfid,
-    afi: tagData.afi,
-    icRef: tagData.icRef,
-    blockSize: tagData.blockSize,
-    blockCount: tagData.blocks.length,
-    data: blocksToDataHex()
-  };
+  const type = tagData.type || 'ISO15693';
+  const isMFC = type.startsWith('MFC') || type.startsWith('MFPLUS');
+  const isMFUL = type === 'MFUL';
+  let dump;
+  if (isMFC || isMFUL) {
+    dump = {
+      type: type,
+      uid: tagData.uid,
+      sak: tagData.sak || '00',
+      atqa: tagData.atqa || '0000',
+      blockSize: tagData.blockSize,
+      blockCount: tagData.blocks.length,
+      data: blocksToDataHex(),
+      blockRead: (tagData.blockRead || []).map(v => v ? '1' : '0').join(''),
+      keyUsed: (tagData.keyUsed || []).join('')
+    };
+  } else {
+    dump = {
+      type: 'ISO15693',
+      uid: tagData.uid,
+      dsfid: tagData.dsfid,
+      afi: tagData.afi,
+      icRef: tagData.icRef,
+      blockSize: tagData.blockSize,
+      blockCount: tagData.blocks.length,
+      data: blocksToDataHex()
+    };
+  }
   const r = await api('POST', '/api/dump?name=' + encodeURIComponent(name), dump);
   if (r) { toast('Saved: ' + name, true); refreshSpiffs(); }
 }
@@ -557,8 +790,10 @@ async function loadDumpList() {
     const name = f.name;
     const sizeStr = formatSize(f.size);
     const isJson = name.toLowerCase().endsWith('.json');
+    const typeTag = f.type ? '<span class="tag-badge ' + f.type + '">' + f.type + '</span>' : '';
     html += '<div class="dump-item">' +
       '<span class="dump-name" title="' + name + '">' + name + '</span>' +
+      typeTag +
       '<span style="font-size:0.75em;color:#555;margin-left:6px;white-space:nowrap">' + sizeStr + '</span>' +
       '<div style="display:flex;gap:4px;margin-left:auto">' +
       (isJson ? '<button class="btn btn-primary btn-sm" onclick="doLoad(\''+name+'\')">Load</button>' : '') +
@@ -574,11 +809,25 @@ async function doLoad(name) {
   const r = await api('GET', '/api/dump?name=' + encodeURIComponent(name));
   if (!r || !r.data) return;
   const d = r.data;
+  tagData.type = d.type || 'ISO15693';
   tagData.uid = d.uid || '';
-  tagData.dsfid = d.dsfid || '00';
-  tagData.afi = d.afi || '00';
-  tagData.icRef = d.icRef || '00';
-  tagData.blockSize = d.blockSize || 4;
+  const isMFC = tagData.type.startsWith('MFC') || tagData.type.startsWith('MFPLUS');
+  const isMFUL = tagData.type === 'MFUL';
+  if (isMFC || isMFUL) {
+    tagData.blockSize = d.blockSize || (isMFUL ? 4 : 16);
+    tagData.sak = d.sak || '00';
+    tagData.atqa = d.atqa || '0000';
+    tagData.dsfid = '00'; tagData.afi = '00'; tagData.icRef = '00';
+    tagData.blockRead = d.blockRead ? d.blockRead.split('').map(c => c === '1') : [];
+    tagData.keyUsed = d.keyUsed ? d.keyUsed.split('').map(c => parseInt(c)) : [];
+  } else {
+    tagData.blockSize = d.blockSize || 4;
+    tagData.dsfid = d.dsfid || '00';
+    tagData.afi = d.afi || '00';
+    tagData.icRef = d.icRef || '00';
+    tagData.blockRead = [];
+    tagData.keyUsed = [];
+  }
   tagData.blockCount = d.blockCount || 0;
   tagData.blocks = dataHexToBlocks(d.data || '', tagData.blockSize);
   updateSharedUI();

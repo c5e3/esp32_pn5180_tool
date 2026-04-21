@@ -20,6 +20,7 @@
 #define PN5180_NSS   5
 #define PN5180_BUSY  16
 #define PN5180_RST   17
+#define PN5180_IRQ   4   // PN5180 IRQ output → ESP32 GPIO4 (RISING edge interrupt)
 
 // SPI clock speed (PN5180 supports up to 7 MHz)
 #define PN5180_SPI_CLOCK 1000000
