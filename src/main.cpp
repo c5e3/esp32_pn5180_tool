@@ -37,6 +37,9 @@ volatile int16_t g_progCurBlock    = -1;
 volatile int16_t g_progTotalBlocks = 0;
 volatile int8_t  g_progKeyType     = -1;   // 0=A, 1=B, -1=none
 volatile uint8_t g_progPhase       = 0;
+// Cooperative cancel flag — UI sets via POST /api/read/cancel; readTask and
+// the long-running PN5180MIFARE loops check it between operations.
+volatile bool    g_readCancel      = false;
 
 // FreeRTOS binary semaphore signalled by PN5180 IRQ pin ISR.
 // mfcAuthBlock() sleeps on this instead of SPI-polling every 1ms.
@@ -50,6 +53,7 @@ void IRAM_ATTR pn5180IrqISR() {
 
 static void readTask(void *) {
     nfcBusy = true;
+    g_readCancel      = false;
     g_progPhase       = 1;   // detecting
     g_progCurBlock    = -1;
     g_progTotalBlocks = 0;
@@ -115,8 +119,13 @@ static void readTask(void *) {
 
             nfcMifare.haltTag();
             nfcMifare.disableRF();
-            asyncResultJson = "{\"status\":\"ok\",\"data\":" + FileManager::mifareToJson(&asyncMifareInfo) + "}";
-            readState = RS_DONE;
+            if (g_readCancel) {
+                asyncResultJson = "{\"status\":\"error\",\"message\":\"Cancelled\"}";
+                readState = RS_ERROR;
+            } else {
+                asyncResultJson = "{\"status\":\"ok\",\"data\":" + FileManager::mifareToJson(&asyncMifareInfo) + "}";
+                readState = RS_DONE;
+            }
             g_progPhase = 0;
             nfcBusy = false;
             vTaskDelete(NULL);
@@ -140,7 +149,9 @@ static void readTask(void *) {
         }
     }
 
-    asyncResultJson = "{\"status\":\"error\",\"message\":\"No tag found\"}";
+    asyncResultJson = g_readCancel
+        ? "{\"status\":\"error\",\"message\":\"Cancelled\"}"
+        : "{\"status\":\"error\",\"message\":\"No tag found\"}";
     readState = RS_ERROR;
     g_progPhase = 0;
     nfcBusy = false;
@@ -199,7 +210,24 @@ void handleRead() {
     server.send(202, "application/json", "{\"status\":\"running\"}");
 }
 
-// POST /api/write — write all blocks, body = {uid, blockSize, blockCount, data}
+// POST /api/read/cancel — request cooperative cancel of an in-flight read.
+// readTask + PN5180MIFARE loops check g_readCancel between operations and
+// abort early. Returns immediately; the polling /api/read call will then
+// resolve to {status:"error",message:"Cancelled"}.
+void handleReadCancel() {
+    if (readState == RS_RUNNING) {
+        g_readCancel = true;
+        server.send(200, "application/json", "{\"status\":\"ok\"}");
+    } else {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"No read in progress\"}");
+    }
+}
+
+// POST /api/write — write all blocks, body = {type, uid, blockSize, blockCount, data, setUid?, writeTrailers?}
+//   type:          "ISO15693" (default) | "MFC1K"|"MFC4K"|"MFCMINI"|"MFPLUS2K"|"MFPLUS4K" | "MFUL"
+//   setUid:        for MFC, also write block 0 using auto-detected magic capability
+//   writeTrailers: for MFC, also write sector trailers (DANGEROUS — can brick sector)
 void handleWrite() {
     GUARD_EMULATION();
     GUARD_NFC_BUSY();
@@ -209,7 +237,7 @@ void handleWrite() {
         return;
     }
 
-    StaticJsonDocument<4096> doc;
+    DynamicJsonDocument doc(12288);
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) {
         server.send(200, "application/json",
@@ -217,17 +245,13 @@ void handleWrite() {
         return;
     }
 
-    const char *uidStr = doc["uid"];
-    uint8_t uid[8];
-    if (!uidStr || !FileManager::hexToUid(String(uidStr), uid)) {
-        server.send(200, "application/json",
-            "{\"status\":\"error\",\"message\":\"Invalid UID\"}");
-        return;
-    }
-
-    uint8_t blockSize = doc["blockSize"] | 4;
-    uint8_t blockCount = doc["blockCount"] | 0;
-    const char *dataStr = doc["data"];
+    const char *typeStr   = doc["type"]   | "ISO15693";
+    const char *uidStr    = doc["uid"]    | "";
+    uint8_t blockSize     = doc["blockSize"]  | 4;
+    uint16_t blockCount   = doc["blockCount"] | 0;
+    const char *dataStr   = doc["data"];
+    bool   setUid         = doc["setUid"]        | false;
+    bool   writeTrailers  = doc["writeTrailers"] | false;
 
     if (!dataStr || blockCount == 0) {
         server.send(200, "application/json",
@@ -239,6 +263,66 @@ void handleWrite() {
     if (!FileManager::hexToBytes(String(dataStr), asyncDataBuffer, sizeof(asyncDataBuffer))) {
         server.send(200, "application/json",
             "{\"status\":\"error\",\"message\":\"Invalid hex data\"}");
+        return;
+    }
+
+    // ── MIFARE Classic / Plus / Ultralight write path ─────────────────────
+    bool isMFC  = (strncmp(typeStr, "MFC",     3) == 0) ||
+                  (strncmp(typeStr, "MFPLUS",  6) == 0);
+    bool isMFUL = (strcmp(typeStr,  "MFUL") == 0);
+
+    if (isMFC || isMFUL) {
+        // Build a MifareTagInfo from the dump and dispatch to writeTagFromDump
+        memset(&asyncMifareInfo, 0, sizeof(asyncMifareInfo));
+        if      (strcmp(typeStr, "MFC1K")    == 0) asyncMifareInfo.type = MIFARE_CLASSIC_1K;
+        else if (strcmp(typeStr, "MFC4K")    == 0) asyncMifareInfo.type = MIFARE_CLASSIC_4K;
+        else if (strcmp(typeStr, "MFCMINI")  == 0) asyncMifareInfo.type = MIFARE_CLASSIC_MINI;
+        else if (strcmp(typeStr, "MFUL")     == 0) asyncMifareInfo.type = MIFARE_ULTRALIGHT;
+        else if (strcmp(typeStr, "MFPLUS2K") == 0) asyncMifareInfo.type = MIFARE_PLUS_SL1_2K;
+        else if (strcmp(typeStr, "MFPLUS4K") == 0) asyncMifareInfo.type = MIFARE_PLUS_SL1_4K;
+        asyncMifareInfo.blockCount = blockCount;
+        memcpy(asyncMifareInfo.data, asyncDataBuffer, (size_t)blockCount * (isMFUL ? 4 : 16));
+
+        nfcBusy = true;
+        bool ok = false;
+        uint16_t magic = 0, written = 0;
+        if (isMFUL) {
+            // MFUL: plain write, no magic detection needed
+            nfcMifare.loadISO14443Config();
+            nfcMifare.activateRF();
+            delay(50);
+            MifareTagInfo live;
+            if (nfcMifare.detectTag(&live)) {
+                ok = nfcMifare.mfulWriteAllPages(&asyncMifareInfo, &written);
+            }
+            nfcMifare.haltTag();
+            nfcMifare.disableRF();
+        } else {
+            // MFC: load dictionary keys then dispatch
+            static uint8_t dk1[PN5180MIFARE::MAX_DICT_KEYS][6];
+            int n1 = files.loadDictKeys(FileManager::DICT_PROTO_MFC, dk1, PN5180MIFARE::MAX_DICT_KEYS);
+            ok = nfcMifare.writeTagFromDump(&asyncMifareInfo, dk1, n1, nullptr, 0,
+                                             setUid, writeTrailers, &magic, &written);
+        }
+        nfcBusy = false;
+        g_progPhase = 0;
+
+        if (!ok) {
+            server.send(200, "application/json",
+                "{\"status\":\"error\",\"message\":\"Write failed (no tag or auth failure)\"}");
+            return;
+        }
+        String resp = "{\"status\":\"ok\",\"written\":" + String(written)
+                    + ",\"magic\":" + String(magic) + "}";
+        server.send(200, "application/json", resp);
+        return;
+    }
+
+    // ── ISO 15693 write path (original behaviour) ─────────────────────────
+    uint8_t uid[8];
+    if (!uidStr || !FileManager::hexToUid(String(uidStr), uid)) {
+        server.send(200, "application/json",
+            "{\"status\":\"error\",\"message\":\"Invalid UID\"}");
         return;
     }
 
@@ -794,6 +878,7 @@ void setup() {
     // Register web server routes
     server.on("/", HTTP_GET, handleRoot);
     server.on("/api/read", HTTP_GET, handleRead);
+    server.on("/api/read/cancel", HTTP_POST, handleReadCancel);
     server.on("/api/write", HTTP_POST, handleWrite);
     server.on("/api/csetuid", HTTP_POST, handleCSetUID);
     server.on("/api/dumps", HTTP_GET, handleListDumps);

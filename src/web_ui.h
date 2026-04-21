@@ -136,8 +136,8 @@ input[type="radio"]{accent-color:#00d4ff}
 <div class="spacer"></div>
 
 <div class="container">
-<h1>NFC Tool</h1>
-<p class="subtitle">PN5180 ISO 15693 Reader/Writer</p>
+<h1>RFID Tool</h1>
+<p class="subtitle">ESP32 &lt;-&gt; PN5180</p>
 
 <!-- Tabs -->
 <div class="tabs">
@@ -154,7 +154,8 @@ input[type="radio"]{accent-color:#00d4ff}
   <div class="card">
     <h2>Tag Operations</h2>
     <div style="display:flex;align-items:center;gap:10px">
-      <button class="btn btn-primary" onclick="doRead()" style="flex-shrink:0">Read Tag</button>
+      <button id="readBtn"   class="btn btn-primary" onclick="doRead()"       style="flex-shrink:0">Read Tag</button>
+      <button id="cancelBtn" class="btn btn-danger"  onclick="doCancelRead()" style="flex-shrink:0;display:none" data-keep-enabled="true">Cancel Read</button>
       <div id="readProgress" style="flex:1;position:relative;background:#0f0f1a;border:1px solid #2a2a4a;border-radius:6px;height:34px;overflow:hidden">
         <div id="readProgressFill" style="position:absolute;top:0;left:0;bottom:0;background:#0066cc;width:0%;transition:width 0.2s"></div>
         <div id="readProgressText" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.82em;color:#bbb;font-family:Consolas,monospace;text-shadow:0 1px 2px #000">Idle</div>
@@ -167,7 +168,7 @@ input[type="radio"]{accent-color:#00d4ff}
     <h2>Save Dump</h2>
     <div class="form-row">
       <label>Name:</label>
-      <input type="text" id="saveDumpName" placeholder="tag.json" style="flex:1">
+      <input type="text" id="saveDumpName" style="flex:1">
       <button class="btn btn-success btn-sm" onclick="doSave()">Save</button>
       <button class="btn btn-primary btn-sm" onclick="doDownloadCurrent()">Download</button>
     </div>
@@ -198,7 +199,7 @@ input[type="radio"]{accent-color:#00d4ff}
         <input type="checkbox" id="toggleSetUid" onchange="onToggleSetUid()">
         <span class="toggle-slider"></span>
       </label>
-      <span class="toggle-label">Set UID (magic card)</span>
+      <span class="toggle-label" id="toggleSetUidLabel">Set UID (magic card)</span>
     </div>
     <div id="csetuidOptions" style="display:none;margin-bottom:10px;padding-left:54px">
       <div class="form-row">
@@ -209,7 +210,19 @@ input[type="radio"]{accent-color:#00d4ff}
         </div>
       </div>
     </div>
+    <div class="toggle-row" id="toggleWriteTrailersRow" style="display:none">
+      <label class="toggle">
+        <input type="checkbox" id="toggleWriteTrailers">
+        <span class="toggle-slider"></span>
+      </label>
+      <span class="toggle-label" style="color:#ff9966">Write sector trailers (⚠ can brick sectors)</span>
+    </div>
     <button class="btn btn-warning" onclick="doWrite()">Write to Tag</button>
+    <div id="writeMagicHint" style="display:none;margin-top:8px;padding:8px;background:#0f0f1a;border-radius:5px;font-size:0.78em;color:#888">
+      MIFARE Classic detected. Magic-card type (Gen 1A/1B, Gen 2 / CUID, Gen 3, Gen 4 GTU)
+      is auto-detected at write time. “Set UID” toggles overwriting block 0 using whichever
+      backdoor the card supports.
+    </div>
   </div>
 
 </div>
@@ -363,7 +376,12 @@ function setBusy(b, msg) {
   const txt = document.getElementById('statusText');
   dot.className = 'status-dot ' + (b ? 'busy' : 'ok');
   txt.textContent = msg || (b ? 'Working...' : 'Ready');
-  document.querySelectorAll('.btn').forEach(el => el.disabled = b);
+  // Disable every button while busy EXCEPT those opted out via data-keep-enabled
+  // (the Cancel Read button needs to stay clickable during a read).
+  document.querySelectorAll('.btn').forEach(el => {
+    if (el.dataset.keepEnabled === 'true') return;
+    el.disabled = b;
+  });
 }
 
 function toast(msg, ok) {
@@ -474,6 +492,39 @@ function updateSharedUI() {
   document.getElementById('sharedInfoAfi').value = tagData.afi || '00';
   document.getElementById('sharedInfoIcRef').value = tagData.icRef || '00';
   renderBlocks('sharedBlockGrid');
+  updateWriteUiForType();
+}
+
+// Show/hide MFC-only write controls and adjust labels based on tag type
+function updateWriteUiForType() {
+  const t = tagData.type || 'ISO15693';
+  const isMFC  = t.startsWith('MFC') || t.startsWith('MFPLUS');
+  const isMFUL = (t === 'MFUL');
+  const setUidLabel = document.getElementById('toggleSetUidLabel');
+  const verRow      = document.getElementById('csetuidOptions');
+  const trailersRow = document.getElementById('toggleWriteTrailersRow');
+  const magicHint   = document.getElementById('writeMagicHint');
+  const setUidRow   = document.getElementById('toggleSetUid');
+  if (!setUidLabel) return;
+
+  if (isMFC) {
+    setUidLabel.textContent = 'Write block 0 (UID via magic backdoor)';
+    trailersRow.style.display = '';
+    magicHint.style.display   = '';
+    // Gen1/Gen2 radio is ISO15693-specific — hide for MFC
+    if (setUidRow.checked) verRow.style.display = 'none';
+    setUidRow.parentElement.parentElement.dataset.iso = 'false';
+  } else if (isMFUL) {
+    setUidLabel.textContent = 'Set UID (not supported on plain Ultralight)';
+    trailersRow.style.display = 'none';
+    magicHint.style.display   = 'none';
+  } else {
+    // ISO 15693 (default)
+    setUidLabel.textContent = 'Set UID (magic card)';
+    trailersRow.style.display = 'none';
+    magicHint.style.display   = 'none';
+    if (setUidRow.checked) verRow.style.display = '';
+  }
 }
 
 function renderBlocks(gridId, srcBlocks) {
@@ -646,8 +697,12 @@ function collectBlocks() {
 // ========== Toggle & Modals ==========
 
 function onToggleSetUid() {
-  const show = document.getElementById('toggleSetUid').checked;
-  document.getElementById('csetuidOptions').style.display = show ? 'block' : 'none';
+  const checked = document.getElementById('toggleSetUid').checked;
+  const t = tagData.type || 'ISO15693';
+  const isMFC = t.startsWith('MFC') || t.startsWith('MFPLUS');
+  // Gen1/Gen2 version radios only relevant for ISO15693 — hide for MFC
+  document.getElementById('csetuidOptions').style.display =
+    (checked && !isMFC) ? 'block' : 'none';
 }
 
 function cancelWrite() {
@@ -689,6 +744,7 @@ function updateReadProgress(j) {
 async function doRead() {
   if (busy) return;
   setBusy(true);
+  setReadButton(true);
   setReadProgress(1, 'Starting...');
   try {
     let j;
@@ -738,6 +794,30 @@ async function doRead() {
     toast('Connection error: ' + e.message, false);
   } finally {
     setBusy(false);
+    setReadButton(false);
+  }
+}
+
+// Toggle Read ↔ Cancel button. Only one is visible at a time.
+function setReadButton(reading) {
+  document.getElementById('readBtn').style.display   = reading ? 'none' : '';
+  document.getElementById('cancelBtn').style.display = reading ? '' : 'none';
+}
+
+// POST cancel — server flips a flag; the running readTask aborts at its next
+// check point and resolves the polling loop with status:"error","Cancelled".
+async function doCancelRead() {
+  const btn = document.getElementById('cancelBtn');
+  btn.disabled = true;
+  btn.textContent = 'Cancelling...';
+  try {
+    await fetch('/api/read/cancel', {method: 'POST'});
+  } catch(e) {
+    // ignore — the polling loop will surface the error
+  } finally {
+    // Re-enable for the next read; visibility is reset by setReadButton(false)
+    btn.disabled = false;
+    btn.textContent = 'Cancel Read';
   }
 }
 
@@ -746,19 +826,30 @@ async function doWrite() {
   collectBlocks();
   if (!tagData.blocks.length) { toast('No data to write', false); return; }
 
+  const t = tagData.type || 'ISO15693';
+  const isMFC  = t.startsWith('MFC') || t.startsWith('MFPLUS');
+  const isMFUL = (t === 'MFUL');
+
+  // ── MIFARE Classic / Ultralight: dispatch directly, no UID-mismatch modal ──
+  // Magic capability and any required block-0 backdoor are auto-detected on the
+  // device side; the UI just forwards the dump + setUid/writeTrailers flags.
+  if (isMFC || isMFUL) {
+    pendingWriteForce = true;
+    await executeWrite();
+    return;
+  }
+
+  // ── ISO 15693: original UID-mismatch flow ──
   const setUid = document.getElementById('toggleSetUid').checked;
   const writeUid = document.getElementById('sharedUid').value.trim().toUpperCase();
 
   if (setUid) {
-    // Will also set UID — validate it
     if (writeUid.length !== 16) { toast('UID must be 16 hex chars', false); return; }
     if (!writeUid.startsWith('E0')) { toast('UID must start with E0', false); return; }
     pendingWriteForce = false;
     await executeWrite();
   } else {
-    // Check UID of tag on reader against loaded dump UID
     pendingWriteForce = false;
-    // First read current tag UID
     setBusy(true, 'Checking tag...');
     try {
       const r = await fetch('/api/read');
@@ -789,21 +880,50 @@ async function executeWrite() {
   collectBlocks();
   const setUid = document.getElementById('toggleSetUid').checked;
   const writeUid = document.getElementById('sharedUid').value.trim().toUpperCase();
+  const t = tagData.type || 'ISO15693';
+  const isMFC  = t.startsWith('MFC') || t.startsWith('MFPLUS');
+  const isMFUL = (t === 'MFUL');
 
-  // Write blocks
+  // Build payload — the device dispatches on the `type` field
   const payload = {
+    type: t,
     uid: writeUid,
     blockSize: tagData.blockSize,
     blockCount: tagData.blocks.length,
     data: blocksToDataHex()
   };
+  if (isMFC) {
+    payload.setUid        = setUid;
+    payload.writeTrailers = document.getElementById('toggleWriteTrailers').checked;
+  }
+
   const r = await api('POST', '/api/write', payload);
   if (!r) return;
 
-  const written = r.written || 0;
-  const tagBlocks = r.tagBlocks || 0;
+  const written = r.written | 0;
 
-  // Set UID if toggled
+  if (isMFC) {
+    const m = r.magic | 0;
+    // Bit names match enum MagicType in PN5180MIFARE.h
+    const flags = [];
+    if (m & 0x01) flags.push('Gen 1A');
+    if (m & 0x02) flags.push('Gen 1B');
+    if (m & 0x04) flags.push('Gen 2 / CUID');
+    if (m & 0x08) flags.push('Gen 3');
+    if (m & 0x10) flags.push('Gen 4 GTU');
+    if (m & 0x20) flags.push('GDM');
+    const tag = flags.length ? ' (' + flags.join(', ') + ')' : ' (no magic detected)';
+    toast('Wrote ' + written + ' blocks' + tag, true);
+    return;
+  }
+
+  if (isMFUL) {
+    toast('Wrote ' + written + ' pages', true);
+    return;
+  }
+
+  // ISO 15693 path — may also need to set UID via legacy /api/csetuid
+  const tagBlocks = r.tagBlocks || 0;
   if (setUid) {
     const ver = document.querySelector('input[name="uidver"]:checked').value;
     const r2 = await api('POST', '/api/csetuid', {uid: writeUid, version: ver});
@@ -1110,6 +1230,7 @@ async function doUpload(input) {
   const name = file.name;
   if (!/^[a-zA-Z0-9_][a-zA-Z0-9_\-\.]*$/.test(name)) { toast('Invalid filename', false); return; }
   setBusy(true, 'Uploading...');
+  let uploadOk = false;
   try {
     const fd = new FormData();
     fd.append('file', file, name);
@@ -1117,13 +1238,17 @@ async function doUpload(input) {
     const j = await r.json();
     if (j.status !== 'ok') { toast(j.message || 'Upload failed', false); return; }
     toast('Uploaded: ' + name, true);
-    await loadDumpList();
-    await loadEmuDumpList();
-    refreshSpiffs();
+    uploadOk = true;
   } catch(e) {
     toast('Upload error: ' + e.message, false);
   } finally {
     setBusy(false);
+  }
+  // Refresh AFTER busy is cleared, otherwise api() short-circuits.
+  if (uploadOk) {
+    await loadDumpList();
+    await loadEmuDumpList();
+    refreshSpiffs();
   }
 }
 
@@ -1298,6 +1423,7 @@ async function doUploadDict(input) {
     return;
   }
   setBusy(true, 'Uploading...');
+  let uploadOk = false;
   try {
     const fd = new FormData();
     fd.append('file', file, name);
@@ -1305,12 +1431,17 @@ async function doUploadDict(input) {
     const j = await r.json();
     if (j.status !== 'ok') { toast(j.message || 'Upload failed', false); return; }
     toast('Uploaded: ' + name, true);
-    await loadDictList();
-    refreshSpiffs();
+    uploadOk = true;
   } catch(e) {
     toast('Upload error: ' + e.message, false);
   } finally {
     setBusy(false);
+  }
+  // Refresh AFTER busy is cleared, otherwise api() short-circuits and the
+  // list never updates with the newly uploaded dictionary.
+  if (uploadOk) {
+    await loadDictList();
+    refreshSpiffs();
   }
 }
 

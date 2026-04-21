@@ -71,6 +71,19 @@ enum MifareType {
     MIFARE_PLUS_SL2    = 7,
 };
 
+// Magic-card flavours (auto-detected by detectMagicType()).
+// Values are bit-flags so multiple capabilities can coexist (e.g. a card may
+// answer both Gen 1A wakeup and the Gen 4 backdoor).
+enum MagicType {
+    MAGIC_NONE     = 0,
+    MAGIC_GEN1A    = 1 << 0,   // 0x40 + 0x43 magic wakeup, blocks unauth-writeable
+    MAGIC_GEN1B    = 1 << 1,   // 0x40 ack but no 0x43 ack; same write protocol
+    MAGIC_GEN2_CUID= 1 << 2,   // standard auth, but block 0 is writeable (probed)
+    MAGIC_GEN3     = 1 << 3,   // APDU 0x90 0xFB/0xF0 0xCC 0xCC for UID/block0
+    MAGIC_GEN4_GTU = 1 << 4,   // 0xCF backdoor read/write any block
+    MAGIC_GDM      = 1 << 5,   // USCUID GDM auth (0x80) + GDM write (0xA8)
+};
+
 struct MifareTagInfo {
     uint8_t     uid[10];     // up to 10 bytes (single, double, triple cascade)
     uint8_t     uidLen;      // 4, 7, or 10
@@ -133,14 +146,75 @@ public:
                           uint8_t (*keys2)[6], int n2);
     bool mfcAuthBlock(MifareTagInfo *info, uint8_t block, uint8_t *key, bool useKeyA);
     bool mfcReadBlock(uint8_t block, uint8_t *out16);
+    // Standard MIFARE Classic WRITE (0xA0) — caller must have authenticated first.
+    bool mfcWriteBlock(uint8_t block, const uint8_t *data16);
 
     // MIFARE Ultralight
     bool mfulReadAllPages(MifareTagInfo *info);
     bool mfulReadPage(uint8_t page, uint8_t *out4);
+    // MFUL WRITE (0xA2) writes 4 bytes per page — no auth needed for plain UL.
+    bool mfulWritePage(uint8_t page, const uint8_t *data4);
+    bool mfulWriteAllPages(MifareTagInfo *dump, uint16_t *outWritten);
+
+    // ---------------------------------------------------------------------------
+    // Magic / Chinese-clone card primitives (port of proxmark3 mifarecmd.c)
+    // ---------------------------------------------------------------------------
+
+    // Auto-detect magic-card flavour. Performs RF cycles + probes; afterwards
+    // RF is left ON and the card is HALTed (caller should re-detect/re-select
+    // before issuing further commands). Returns OR'd MagicType bit-flags
+    // (MAGIC_NONE if no magic detected).
+    uint16_t detectMagicType(MifareTagInfo *info);
+
+    // --- Gen 1A / 1B (CUID/UID) ---
+    // 0x40 (7-bit) + 0x43 magic wakeup. After this, *all* blocks on the card
+    // can be written via plain MIFARE WRITE without authentication.
+    bool gen1Wakeup(bool *isGen1B = nullptr);
+    // After gen1Wakeup, write a 16-byte block. Sends WRITE 0xA0 + ACK roundtrip
+    // then 16 bytes + CRC + ACK. No auth, no Crypto1.
+    bool gen1WriteBlock(uint8_t block, const uint8_t *data16);
+
+    // --- Gen 3 (APDU magic) ---
+    // Send 0x90 0xFB 0xCC 0xCC + uidLen + uid + CRC. Sets the UID. Card
+    // recomputes BCC and stays selected. Caller must have selected the tag.
+    bool gen3SetUID(const uint8_t *uid, uint8_t uidLen);
+    // Send 0x90 0xF0 0xCC 0xCC 0x10 + 16 bytes block 0 + CRC. Overwrites
+    // the manufacturer block (UID + BCC + SAK + ATQA + manufacturer bytes).
+    bool gen3SetBlock0(const uint8_t *block16);
+    // Send 0x90 0xFD 0x11 0x11 0x00 + CRC. Permanently locks the UID — once
+    // sent, no further Gen3 commands are accepted.
+    bool gen3Freeze();
+
+    // --- Gen 4 GTU (backdoor read/write any block, any sector) ---
+    // 0xCF + pwd[4] + 0xCD + blockno + 16 bytes data + CRC. Default pwd 00000000.
+    bool gen4WriteBlock(uint8_t block, const uint8_t pwd[4], const uint8_t *data16);
+    bool gen4ReadBlock(uint8_t block, const uint8_t pwd[4], uint8_t *out16);
+
+    // --- GDM / USCUID magic auth + GDM-write ---
+    // GDM auth uses cmd 0x80 instead of 0x60/0x61, then write uses 0xA8.
+    bool gdmAuthBlock(MifareTagInfo *info, uint8_t block, const uint8_t key[6], bool useKeyA);
+    bool gdmWriteBlock(uint8_t block, const uint8_t *data16);
+
+    // --- High-level dump → tag write with auto magic detection ---
+    // dump:           the source dump (data + UID + sector keys live in trailers).
+    // keys1/n1, keys2/n2: dictionary keys to try when normal auth is needed.
+    // writeBlock0:    if true, attempt to overwrite block 0 (UID) using whichever
+    //                 magic capability the card supports (Gen1/Gen3/Gen4/CUID).
+    // writeTrailers:  if true, also write sector trailer blocks (DANGEROUS — wrong
+    //                 access bits can permanently brick a sector).
+    // outMagic, outWritten: detected magic flags + count of blocks successfully
+    //                       written (both optional).
+    bool writeTagFromDump(MifareTagInfo *dump,
+                          uint8_t (*keys1)[6], int n1,
+                          uint8_t (*keys2)[6], int n2,
+                          bool writeBlock0,
+                          bool writeTrailers,
+                          uint16_t *outMagic = nullptr,
+                          uint16_t *outWritten = nullptr);
 
     // Dictionary key loading
     // MAX_DICT_KEYS is exposed here so callers can pre-size their arrays before RF activation
-    static constexpr int MAX_DICT_KEYS = 500;
+    static constexpr int MAX_DICT_KEYS = 2000;
     static int loadKeysFromFile(const char *path, uint8_t (*keys)[6], int maxKeys);
 
     // Utility

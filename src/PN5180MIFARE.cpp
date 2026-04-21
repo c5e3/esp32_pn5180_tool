@@ -21,6 +21,7 @@ extern volatile int16_t g_progCurBlock;
 extern volatile int16_t g_progTotalBlocks;
 extern volatile int8_t  g_progKeyType;
 extern volatile uint8_t g_progPhase;
+extern volatile bool    g_readCancel;
 
 // ---------------------------------------------------------------------------
 // CRC-16/ISO-IEC-13239 (used in ISO 14443A frames)
@@ -820,6 +821,7 @@ bool PN5180MIFARE::mfcReadAllBlocks(MifareTagInfo *info,
     auto tryKey = [&](uint8_t *key, bool &authOk, bool &useA,
                       uint8_t *goodKey, bool &abort, uint8_t trailer) {
         for (int ab = 0; ab < 2 && !authOk && !abort; ab++) {
+            if (g_readCancel) { abort = true; return; }
             if (mfcAuthBlock(info, trailer, key, ab == 0)) {
                 authOk = true;
                 useA = (ab == 0);
@@ -831,6 +833,7 @@ bool PN5180MIFARE::mfcReadAllBlocks(MifareTagInfo *info,
     };
 
     for (uint8_t s = 0; s < ns; s++) {
+        if (g_readCancel) { Serial.println("[MFC] Cancelled"); break; }
         uint8_t trailerBlock = sectorTrailerBlock(info->type, s);
         bool authOk = false;
         bool useA   = true;
@@ -1407,3 +1410,627 @@ String PN5180MIFARE::identCard() {
     Serial.println("[ident] " + out);
     return out;
 }
+
+// ===========================================================================
+// WRITE SUPPORT — standard MFC/MFUL + magic card variants
+// ---------------------------------------------------------------------------
+// Port of proxmark3 mifarecmd.c {MifareCSetBlock, MifareGen3UID/Blk/Freez,
+// MifareG4WriteBlk, MifareCIdent} adapted to the PN5180 SPI primitives.
+//
+// Phase value 4 is reserved for "writing" so the web UI can distinguish
+// auth (2) / read (3) / write (4) progress phases.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Standard MIFARE Classic WRITE (cmd 0xA0)
+// ---------------------------------------------------------------------------
+// 14443A WRITE is two-phase:
+//   1. PCD → PICC: WRITE 0xA0 + blockNo + CRC (HW)   ← PICC ack 0x0A
+//   2. PCD → PICC: 16 data bytes + CRC (HW)          ← PICC ack 0x0A
+// HW CRC must be enabled (mfcAuthBlock leaves it on; for Gen1 path we enable
+// it explicitly after the magic wakeup).
+bool PN5180MIFARE::mfcWriteBlock(uint8_t block, const uint8_t *data16) {
+    g_progPhase    = 4;          // writing
+    g_progCurBlock = block;
+
+    uint8_t cmd[2] = { MFC_WRITE, block };
+    uint8_t resp[8] = {0};
+    uint8_t rl = 0;
+
+    if (!transceiveInAuth(cmd, 2, resp, &rl, 100)) {
+        Serial.printf("[MFC] Write blk %u: cmd RX timeout\n", block);
+        return false;
+    }
+    if (rl < 1 || (resp[0] & 0x0F) != 0x0A) {
+        Serial.printf("[MFC] Write blk %u: cmd NAK 0x%02X\n", block, rl ? resp[0] : 0xFF);
+        return false;
+    }
+
+    uint8_t dbuf[16];
+    memcpy(dbuf, data16, 16);
+    if (!transceiveInAuth(dbuf, 16, resp, &rl, 200)) {
+        Serial.printf("[MFC] Write blk %u: data RX timeout\n", block);
+        return false;
+    }
+    if (rl < 1 || (resp[0] & 0x0F) != 0x0A) {
+        Serial.printf("[MFC] Write blk %u: data NAK 0x%02X\n", block, rl ? resp[0] : 0xFF);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// MIFARE Ultralight WRITE (cmd 0xA2): single-phase, 4 data bytes
+// ---------------------------------------------------------------------------
+bool PN5180MIFARE::mfulWritePage(uint8_t page, const uint8_t *data4) {
+    g_progPhase    = 4;
+    g_progCurBlock = page;
+
+    uint8_t cmd[8];
+    uint8_t len = 0;
+    cmd[len++] = MFUL_WRITE;
+    cmd[len++] = page;
+    memcpy(cmd + len, data4, 4);
+    len += 4;
+    appendCRC16(cmd, &len);
+
+    uint8_t resp[8] = {0};
+    uint8_t rl = 0;
+    if (!transceive14443(cmd, len, resp, &rl, 200)) return false;
+    return rl >= 1 && (resp[0] & 0x0F) == 0x0A;
+}
+
+bool PN5180MIFARE::mfulWriteAllPages(MifareTagInfo *dump, uint16_t *outWritten) {
+    uint16_t w = 0;
+    g_progTotalBlocks = dump->blockCount;
+    // Skip pages 0..1 (UID/BCC, locked on factory UL) and lock pages 2..3 by
+    // default — caller can override later if needed. Page 4+ is user memory.
+    for (uint8_t p = 4; p < dump->blockCount; p++) {
+        if (mfulWritePage(p, dump->data + p * 4)) w++;
+    }
+    if (outWritten) *outWritten = w;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Magic Gen 1A / 1B wakeup: short-frame 0x40, then full-byte 0x43
+// ---------------------------------------------------------------------------
+bool PN5180MIFARE::gen1Wakeup(bool *isGen1B) {
+    if (isGen1B) *isGen1B = false;
+
+    // Short-frame wakeup needs CRC OFF and Crypto1 OFF
+    andRegister(REG_CRC_TX_CONFIG, 0xFFFFFFFEU);
+    andRegister(REG_CRC_RX_CONFIG, 0xFFFFFFFEU);
+    andRegister(REG_SYSTEM_CONFIG, 0xFFFFFFBFU);
+
+    // ── 0x40 (7 bits) ───────────────────────────────────────────────────
+    clearIRQ();
+    setIdle();
+    activateTransceive();
+    uint8_t buf[3] = { PN5180_SEND_DATA, 0x07, 0x40 };
+    if (!spiSend(buf, sizeof(buf))) return false;
+    delay(5);
+    uint32_t rxs  = readRegister(REG_RX_STATUS);
+    uint8_t  rlen = (uint8_t)(rxs & 0x1FF);
+    clearIRQ();
+    if (rlen < 1) return false;
+
+    uint8_t r[2] = {0};
+    uint8_t rc[2] = { PN5180_READ_DATA, 0x00 };
+    spiSend(rc, sizeof(rc));
+    spiReceive(r, 1);
+    if ((r[0] & 0x0F) != 0x0A) return false;
+
+    // ── 0x43 (full byte) ────────────────────────────────────────────────
+    clearIRQ();
+    setIdle();
+    activateTransceive();
+    uint8_t buf2[3] = { PN5180_SEND_DATA, 0x00, 0x43 };
+    if (!spiSend(buf2, sizeof(buf2))) return false;
+    delay(5);
+    rxs  = readRegister(REG_RX_STATUS);
+    rlen = (uint8_t)(rxs & 0x1FF);
+    clearIRQ();
+    if (rlen < 1) {
+        // Gen 1B: no ack on 0x43 but card is still in privileged mode
+        if (isGen1B) *isGen1B = true;
+        return true;
+    }
+    spiSend(rc, sizeof(rc));
+    spiReceive(r, 1);
+    if ((r[0] & 0x0F) != 0x0A) {
+        if (isGen1B) *isGen1B = true;
+    }
+    return true;
+}
+
+bool PN5180MIFARE::gen1WriteBlock(uint8_t block, const uint8_t *data16) {
+    // Re-enable HW CRC for the WRITE command + data frames
+    orRegister(REG_CRC_TX_CONFIG, 0x01);
+    orRegister(REG_CRC_RX_CONFIG, 0x01);
+
+    g_progPhase    = 4;
+    g_progCurBlock = block;
+
+    uint8_t cmd[2] = { MFC_WRITE, block };
+    uint8_t resp[8] = {0};
+    uint8_t rl = 0;
+
+    if (!transceiveInAuth(cmd, 2, resp, &rl, 100)) return false;
+    if (rl < 1 || (resp[0] & 0x0F) != 0x0A) return false;
+
+    uint8_t dbuf[16];
+    memcpy(dbuf, data16, 16);
+    if (!transceiveInAuth(dbuf, 16, resp, &rl, 300)) return false;
+    return rl >= 1 && (resp[0] & 0x0F) == 0x0A;
+}
+
+// ---------------------------------------------------------------------------
+// Magic Gen 3 (APDU) — caller must have selected the tag first
+// ---------------------------------------------------------------------------
+// Send one Gen3 APDU (CRC appended manually) and verify the "9000fd07" reply.
+bool PN5180MIFARE::sendCmd14443(uint8_t *cmd, uint8_t cmdLen,
+                                 uint8_t *resp, uint8_t *respLen, uint16_t timeoutMs) {
+    // Gen3/Gen4 magic cards are slow — disable HW CRC (manual append on TX)
+    // and call the regular transceiver. Returned data still includes the
+    // chip's CRC bytes; we don't strip them since callers check leading bytes.
+    andRegister(REG_CRC_TX_CONFIG, 0xFFFFFFFEU);
+    andRegister(REG_CRC_RX_CONFIG, 0xFFFFFFFEU);
+    return transceive14443(cmd, cmdLen, resp, respLen, timeoutMs);
+}
+
+bool PN5180MIFARE::gen3SetUID(const uint8_t *uid, uint8_t uidLen) {
+    if (uidLen != 4 && uidLen != 7 && uidLen != 10) return false;
+    uint8_t cmd[20];
+    cmd[0] = 0x90; cmd[1] = 0xFB; cmd[2] = 0xCC; cmd[3] = 0xCC; cmd[4] = 0x07;
+    memcpy(cmd + 5, uid, uidLen);
+    uint8_t len = 5 + uidLen;
+    appendCRC16(cmd, &len);
+    uint8_t resp[16] = {0};
+    uint8_t rl = 0;
+    if (!sendCmd14443(cmd, len, resp, &rl, 2500)) return false;
+    return rl >= 4 && resp[0] == 0x90 && resp[1] == 0x00;
+}
+
+bool PN5180MIFARE::gen3SetBlock0(const uint8_t *block16) {
+    uint8_t cmd[24];
+    cmd[0] = 0x90; cmd[1] = 0xF0; cmd[2] = 0xCC; cmd[3] = 0xCC; cmd[4] = 0x10;
+    memcpy(cmd + 5, block16, 16);
+    uint8_t len = 21;
+    appendCRC16(cmd, &len);
+    uint8_t resp[16] = {0};
+    uint8_t rl = 0;
+    if (!sendCmd14443(cmd, len, resp, &rl, 2500)) return false;
+    return rl >= 4 && resp[0] == 0x90 && resp[1] == 0x00;
+}
+
+bool PN5180MIFARE::gen3Freeze() {
+    uint8_t cmd[7] = { 0x90, 0xFD, 0x11, 0x11, 0x00, 0xE7, 0x91 };  // CRC pre-baked
+    uint8_t resp[16] = {0};
+    uint8_t rl = 0;
+    if (!sendCmd14443(cmd, sizeof(cmd), resp, &rl, 2500)) return false;
+    return rl >= 4 && resp[0] == 0x90 && resp[1] == 0x00;
+}
+
+// ---------------------------------------------------------------------------
+// Magic Gen 4 GTU — backdoor read/write any block, any password
+// ---------------------------------------------------------------------------
+// Cmd format: 0xCF + pwd[4] + opcode + args + CRC (HW disabled, manual CRC).
+// Opcodes: 0xCD = write 16B block, 0xCE = read 16B block.
+// On success the card replies with the literal 4 bytes "90 00 fd 07".
+bool PN5180MIFARE::gen4WriteBlock(uint8_t block, const uint8_t pwd[4], const uint8_t *data16) {
+    uint8_t cmd[26];
+    cmd[0] = 0xCF;
+    memcpy(cmd + 1, pwd, 4);
+    cmd[5] = 0xCD;        // write opcode
+    cmd[6] = block;
+    memcpy(cmd + 7, data16, 16);
+    uint8_t len = 23;
+    appendCRC16(cmd, &len);
+
+    andRegister(REG_CRC_TX_CONFIG, 0xFFFFFFFEU);
+    andRegister(REG_CRC_RX_CONFIG, 0xFFFFFFFEU);
+
+    g_progPhase    = 4;
+    g_progCurBlock = block;
+
+    uint8_t resp[16] = {0};
+    uint8_t rl = 0;
+    if (!transceive14443(cmd, len, resp, &rl, 2500)) return false;
+    return rl >= 4 && resp[0] == 0x90 && resp[1] == 0x00 &&
+                      resp[2] == 0xFD && resp[3] == 0x07;
+}
+
+bool PN5180MIFARE::gen4ReadBlock(uint8_t block, const uint8_t pwd[4], uint8_t *out16) {
+    uint8_t cmd[10];
+    cmd[0] = 0xCF;
+    memcpy(cmd + 1, pwd, 4);
+    cmd[5] = 0xCE;
+    cmd[6] = block;
+    cmd[7] = 0x00;
+    cmd[8] = 0x00;
+    uint8_t len = 7;
+    appendCRC16(cmd, &len);
+
+    andRegister(REG_CRC_TX_CONFIG, 0xFFFFFFFEU);
+    andRegister(REG_CRC_RX_CONFIG, 0xFFFFFFFEU);
+
+    uint8_t resp[20] = {0};
+    uint8_t rl = 0;
+    if (!transceive14443(cmd, len, resp, &rl, 2500)) return false;
+    if (rl < 16) return false;
+    memcpy(out16, resp, 16);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// GDM / USCUID magic
+// ---------------------------------------------------------------------------
+// GDM auth (0x80) uses the same Crypto1 protocol as standard auth but on cmd
+// 0x80 instead of 0x60/0x61. After a successful GDM auth, GDM-write (0xA8)
+// can write to any block — including normally-locked sector-trailer access bits.
+bool PN5180MIFARE::gdmAuthBlock(MifareTagInfo *info, uint8_t block,
+                                 const uint8_t key[6], bool useKeyA) {
+    g_progPhase    = 2;
+    g_progCurBlock = block;
+    g_progKeyType  = useKeyA ? 0 : 1;
+
+    // Same payload layout as MIFARE_AUTHENTICATE but key_type byte is the
+    // GDM auth opcode 0x80 (0x60-style A-equivalent) — proxmark uses the
+    // same 0x80 regardless of A/B for GDM.
+    uint8_t cmd[13];
+    cmd[0] = 0x0C;
+    memcpy(cmd + 1, key, 6);
+    cmd[7] = 0x80;                              // GDM AUTH
+    cmd[8] = block;
+    memcpy(cmd + 9, info->uid, 4);
+
+    orRegister(REG_CRC_TX_CONFIG, 0x01);
+    orRegister(REG_CRC_RX_CONFIG, 0x01);
+    setIdle();
+    clearIRQ();
+    if (g_irqSem) xSemaphoreTake(g_irqSem, 0);
+
+    if (!spiSend(cmd, sizeof(cmd))) return false;
+    uint8_t status = 0xFF;
+    if (!spiReceive(&status, 1)) return false;
+    return status == 0x00;
+}
+
+bool PN5180MIFARE::gdmWriteBlock(uint8_t block, const uint8_t *data16) {
+    g_progPhase    = 4;
+    g_progCurBlock = block;
+
+    // GDM write uses cmd byte 0xA8 (instead of 0xA0). Two-phase like normal WRITE.
+    uint8_t cmd[2] = { 0xA8, block };
+    uint8_t resp[8] = {0};
+    uint8_t rl = 0;
+    if (!transceiveInAuth(cmd, 2, resp, &rl, 100)) return false;
+    if (rl < 1 || (resp[0] & 0x0F) != 0x0A) return false;
+
+    uint8_t dbuf[16];
+    memcpy(dbuf, data16, 16);
+    if (!transceiveInAuth(dbuf, 16, resp, &rl, 300)) return false;
+    return rl >= 1 && (resp[0] & 0x0F) == 0x0A;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-detect magic-card flavour
+// ---------------------------------------------------------------------------
+// Order:
+//   1. Gen 1A/1B (cheap: short-frame 0x40, no select needed)
+//   2. Gen 4 GTU backdoor get-config with default pwd 0
+//   3. Gen 3 APDU read-block-0-without-auth probe
+//   4. Gen 4 GDM hidden-block read probe (uses the GDM ReadCfg cmd)
+//   5. Gen 2 / CUID — last (we authenticate + try to write block 0; if it
+//      ACKs, the card is CUID. We detect this lazily later in writeTagFromDump
+//      to avoid actually writing during detection.)
+// Each probe powers down the field briefly to reset card state.
+uint16_t PN5180MIFARE::detectMagicType(MifareTagInfo *info) {
+    uint16_t flags = 0;
+
+    auto rfReset = [this]() {
+        disableRF();
+        delay(15);
+        activateRF();
+        delay(20);
+        loadISO14443Config();
+        writeRegister(0x1A, 0x02U);
+    };
+
+    // ── 1. Gen 1A / 1B ──────────────────────────────────────────────────
+    rfReset();
+    {
+        bool isGen1B = false;
+        if (gen1Wakeup(&isGen1B)) {
+            flags |= isGen1B ? MAGIC_GEN1B : MAGIC_GEN1A;
+            haltTag();
+        }
+    }
+
+    // ── 2. Gen 4 GTU (backdoor get-config) ──────────────────────────────
+    rfReset();
+    {
+        MifareTagInfo tmp;
+        if (detectTag(&tmp)) {
+            uint8_t cmd[8] = { 0xCF, 0x00, 0x00, 0x00, 0x00, 0xC6, 0x00, 0x00 };
+            uint8_t l = 6;
+            appendCRC16(cmd, &l);
+            uint8_t resp[40] = {0};
+            uint8_t rl = 0;
+            if (transceive14443(cmd, 8, resp, &rl, 200) && (rl == 32 || rl == 34)) {
+                flags |= MAGIC_GEN4_GTU;
+            }
+        }
+    }
+
+    // ── 3. Gen 3 APDU (read block 0 without auth — Gen3 magic responds) ─
+    rfReset();
+    {
+        MifareTagInfo tmp;
+        if (detectTag(&tmp)) {
+            uint8_t cmd[4] = { 0x30, 0x00, 0x02, 0xA8 };
+            uint8_t resp[20] = {0};
+            uint8_t rl = 0;
+            if (transceive14443(cmd, 4, resp, &rl, 50) && rl == 18) {
+                flags |= MAGIC_GEN3;
+            }
+        }
+    }
+
+    // ── 4. GDM (USCUID) — magic auth probe ───────────────────────────────
+    rfReset();
+    {
+        MifareTagInfo tmp;
+        if (detectTag(&tmp)) {
+            uint8_t cmd[4] = { 0x80, 0x00, 0x6C, 0x92 };
+            uint8_t resp[8] = {0};
+            uint8_t rl = 0;
+            if (transceive14443(cmd, 4, resp, &rl, 50) && rl == 4) {
+                flags |= MAGIC_GDM;
+            }
+        }
+    }
+
+    // Re-detect the live tag for the caller (so info->uid is fresh).
+    rfReset();
+    detectTag(info);
+
+    Serial.printf("[magic] detected flags=0x%04X\n", flags);
+    return flags;
+}
+
+// ---------------------------------------------------------------------------
+// High-level: write a dump back to a tag with auto magic detection
+// ---------------------------------------------------------------------------
+// Strategy:
+//   • Detect tag + magic capabilities up front (~200ms).
+//   • Block 0 (UID): use whichever magic op the card supports. Fall back to
+//     standard auth+WRITE (works on Gen 2 / CUID), otherwise skip.
+//   • Other blocks:
+//       - Gen 1A/1B  → unauth WRITE per block (haltTag + gen1Wakeup each time)
+//       - Gen 4 GTU  → backdoor write (no auth, any block)
+//       - else       → standard auth (try keys from the dump trailer first,
+//                      then defaults, then dict) + WRITE
+//   • Sector trailers are skipped unless writeTrailers is true.
+bool PN5180MIFARE::writeTagFromDump(MifareTagInfo *dump,
+                                     uint8_t (*keys1)[6], int n1,
+                                     uint8_t (*keys2)[6], int n2,
+                                     bool writeBlock0,
+                                     bool writeTrailers,
+                                     uint16_t *outMagic,
+                                     uint16_t *outWritten) {
+    if (outMagic)   *outMagic   = 0;
+    if (outWritten) *outWritten = 0;
+    g_progPhase       = 1;
+    g_progTotalBlocks = dump->blockCount;
+    g_progCurBlock    = -1;
+
+    // Bring the field up and detect the live card
+    if (!loadISO14443Config()) return false;
+    if (!activateRF()) return false;
+    delay(50);
+
+    MifareTagInfo live;
+    if (!detectTag(&live)) {
+        Serial.println("[write] No tag detected");
+        disableRF();
+        return false;
+    }
+
+    // Probe magic-card capabilities (does its own RF cycles internally; leaves
+    // the card detected and selected at the end).
+    uint16_t magic = detectMagicType(&live);
+    if (outMagic) *outMagic = magic;
+
+    uint16_t written = 0;
+    auto isTrailer = [&](uint8_t b) -> bool {
+        uint8_t s = blockToSector(dump->type, b);
+        return b == sectorTrailerBlock(dump->type, s);
+    };
+
+    // ── Path A: Gen 4 GTU backdoor — fastest, no auth, any block ────────
+    if (magic & MAGIC_GEN4_GTU) {
+        uint8_t pwd[4] = {0, 0, 0, 0};
+        // Re-select after the magic detection
+        if (!reActivateCard(&live)) {
+            disableRF();
+            return false;
+        }
+        for (uint16_t b = 0; b < dump->blockCount; b++) {
+            if (b == 0 && !writeBlock0) continue;
+            if (isTrailer(b) && !writeTrailers) continue;
+            if (gen4WriteBlock(b, pwd, dump->data + b * 16)) written++;
+        }
+        haltTag();
+        disableRF();
+        if (outWritten) *outWritten = written;
+        g_progPhase = 0;
+        return true;
+    }
+
+    // ── Path B: Gen 1A/1B — per-block wakeup + unauth WRITE ─────────────
+    if (magic & (MAGIC_GEN1A | MAGIC_GEN1B)) {
+        for (uint16_t b = 0; b < dump->blockCount; b++) {
+            if (b == 0 && !writeBlock0) continue;
+            if (isTrailer(b) && !writeTrailers) continue;
+
+            // Each write needs its own wakeup (card halts between ops)
+            bool ok = false;
+            for (int retry = 0; retry < 2 && !ok; retry++) {
+                disableRF(); delay(10);
+                activateRF(); delay(15);
+                loadISO14443Config();
+                writeRegister(0x1A, 0x02U);
+                if (gen1Wakeup(nullptr) && gen1WriteBlock(b, dump->data + b * 16)) {
+                    ok = true;
+                }
+            }
+            if (ok) written++;
+        }
+        haltTag();
+        disableRF();
+        if (outWritten) *outWritten = written;
+        g_progPhase = 0;
+        return true;
+    }
+
+    // ── Path C: Standard MFC auth + WRITE per sector ────────────────────
+    // (also handles Gen 2 / CUID for block 0 — standard auth + WRITE just works)
+    // (Gen 3 would only help for block 0; we use it lazily below.)
+    if (!reActivateCard(&live)) {
+        disableRF();
+        return false;
+    }
+
+    uint8_t ns = totalSectors(dump->type);
+    uint8_t reuseKey[6] = {0};
+    bool    reuseKeyA   = true;
+    bool    hasReuse    = false;
+
+    // Helper: try one key (both A and B) on the trailer.
+    auto trySectorKey = [&](uint8_t *key, bool &authOk, bool &useA,
+                             uint8_t *goodKey, bool &abortF, uint8_t trailer) {
+        for (int ab = 0; ab < 2 && !authOk && !abortF; ab++) {
+            if (mfcAuthBlock(&live, trailer, key, ab == 0)) {
+                authOk = true;
+                useA = (ab == 0);
+                memcpy(goodKey, key, 6);
+            } else {
+                if (!reSelectCard(&live)) abortF = true;
+            }
+        }
+    };
+
+    for (uint8_t s = 0; s < ns; s++) {
+        uint8_t trailer = sectorTrailerBlock(dump->type, s);
+        bool authOk = false, useA = true, abortF = false;
+        uint8_t goodKey[6];
+
+        // 1) Reuse key from previous sector
+        if (hasReuse) trySectorKey(reuseKey, authOk, useA, goodKey, abortF, trailer);
+
+        // 2) Keys baked into the dump's own sector trailer
+        if (!authOk && !abortF) {
+            uint8_t trA[6], trB[6];
+            memcpy(trA, dump->data + trailer * 16,      6);
+            memcpy(trB, dump->data + trailer * 16 + 10, 6);
+            trySectorKey(trA, authOk, useA, goodKey, abortF, trailer);
+            if (!authOk && !abortF)
+                trySectorKey(trB, authOk, useA, goodKey, abortF, trailer);
+        }
+
+        // 3) Default keys
+        for (int ki = 0; ki < (int)NUM_DEFAULT_KEYS && !authOk && !abortF; ki++)
+            trySectorKey((uint8_t*)DEFAULT_KEYS[ki], authOk, useA, goodKey, abortF, trailer);
+
+        // 4) Dict files
+        for (int ki = 0; ki < n1 && !authOk && !abortF; ki++)
+            trySectorKey(keys1[ki], authOk, useA, goodKey, abortF, trailer);
+        for (int ki = 0; ki < n2 && !authOk && !abortF; ki++)
+            trySectorKey(keys2[ki], authOk, useA, goodKey, abortF, trailer);
+
+        if (!authOk) {
+            Serial.printf("[write] Sector %u: no key found, skipping\n", s);
+            continue;
+        }
+        memcpy(reuseKey, goodKey, 6);
+        reuseKeyA = useA;
+        hasReuse  = true;
+
+        uint8_t first = sectorFirstBlock(dump->type, s);
+        uint8_t cnt   = sectorBlockCount(dump->type, s);
+        Serial.printf("[write] Sector %u: auth OK key=%c, writing blocks %u..%u\n",
+            s, useA ? 'A' : 'B', first, (uint8_t)(first + cnt - 1));
+
+        for (uint8_t b = first; b < first + cnt; b++) {
+            // Skip block 0 here — handled separately via magic / lazy-CUID below
+            if (b == 0) continue;
+            // Skip sector trailer unless explicitly requested
+            if (b == trailer && !writeTrailers) continue;
+
+            bool wOk = mfcWriteBlock(b, dump->data + b * 16);
+            if (!wOk) {
+                // Re-select + re-auth and retry once
+                if (reSelectCard(&live) && mfcAuthBlock(&live, trailer, goodKey, useA)) {
+                    wOk = mfcWriteBlock(b, dump->data + b * 16);
+                }
+            }
+            if (wOk) written++;
+        }
+    }
+
+    // ── Block 0 handling ────────────────────────────────────────────────
+    // Standard MFC auth+WRITE on block 0 only succeeds on CUID/Gen2 cards.
+    // Gen 3 path is also handled here.
+    if (writeBlock0) {
+        bool b0ok = false;
+
+        // Try Gen 3 APDU first (cheap if Gen3 was detected)
+        if (magic & MAGIC_GEN3) {
+            if (reActivateCard(&live)) {
+                if (gen3SetBlock0(dump->data)) {
+                    b0ok = true;
+                    Serial.println("[write] block 0 via Gen3 APDU OK");
+                }
+            }
+        }
+
+        // Otherwise (or as fallback): authenticate sector 0 and try a normal WRITE.
+        // This succeeds on Gen 2 / CUID magic cards; fails on plain MIFARE Classic.
+        if (!b0ok) {
+            uint8_t defKey[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+            uint8_t key[6];
+            // Prefer dict + dump-trailer key A for sector 0
+            if (reActivateCard(&live)) {
+                bool authed = false;
+                memcpy(key, dump->data + 0 + 3*16, 6);     // sector 0 trailer key A (block 3)
+                if (mfcAuthBlock(&live, 0, key, true))     authed = true;
+                if (!authed && reSelectCard(&live) && mfcAuthBlock(&live, 0, defKey, true)) authed = true;
+                for (int ki = 0; ki < n1 && !authed; ki++) {
+                    if (reSelectCard(&live) && mfcAuthBlock(&live, 0, keys1[ki], true)) { memcpy(key, keys1[ki], 6); authed = true; break; }
+                }
+                for (int ki = 0; ki < n2 && !authed; ki++) {
+                    if (reSelectCard(&live) && mfcAuthBlock(&live, 0, keys2[ki], true)) { memcpy(key, keys2[ki], 6); authed = true; break; }
+                }
+                if (authed && mfcWriteBlock(0, dump->data)) {
+                    b0ok = true;
+                    if (!(magic & MAGIC_GEN3)) magic |= MAGIC_GEN2_CUID;
+                    Serial.println("[write] block 0 via standard WRITE OK (CUID)");
+                }
+            }
+        }
+
+        if (b0ok) written++;
+        else      Serial.println("[write] block 0 write FAILED — non-magic card?");
+        if (outMagic) *outMagic = magic;
+    }
+
+    haltTag();
+    disableRF();
+    if (outWritten) *outWritten = written;
+    g_progPhase = 0;
+    return true;
+}
+
+

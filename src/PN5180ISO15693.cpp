@@ -1,6 +1,9 @@
 #include "PN5180ISO15693.h"
 #include "config.h"
 
+// Cooperative cancel flag from main.cpp; checked in long-running loops.
+extern volatile bool g_readCancel;
+
 PN5180ISO15693::PN5180ISO15693(uint8_t nssPin, uint8_t busyPin, uint8_t rstPin)
     : _nss(nssPin), _busy(busyPin), _rst(rstPin),
       _spiSettings(PN5180_SPI_CLOCK, MSBFIRST, SPI_MODE0) {}
@@ -447,6 +450,7 @@ bool PN5180ISO15693::readTag(ISO15693TagInfo *info, uint8_t *data, uint16_t maxD
 
     for (uint8_t b = 0; b < info->blockCount; b++) {
         yield();
+        if (g_readCancel) { disableRF(); return false; }
         if (!readSingleBlock(info->uid, b, &data[b * info->blockSize], info->blockSize)) {
             Serial.printf("Read block %d failed\n", b);
             disableRF();

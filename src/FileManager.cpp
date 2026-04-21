@@ -160,8 +160,11 @@ String FileManager::listFiles(const char *folder) {
     }
 
     if (isDicts) {
-        std::sort(dictNames.begin(), dictNames.end(), [&cfg](const String &a, const String &b) {
-            return dictOrderIndex(cfg, a.c_str()) < dictOrderIndex(cfg, b.c_str());
+        std::stable_sort(dictNames.begin(), dictNames.end(), [&cfg](const String &a, const String &b) {
+            int ia = dictOrderIndex(cfg, a.c_str());
+            int ib = dictOrderIndex(cfg, b.c_str());
+            if (ia != ib) return ia < ib;
+            return strcmp(a.c_str(), b.c_str()) < 0;
         });
         for (const String &name : dictNames) {
             String path2 = basePath + "/" + name;
@@ -308,8 +311,11 @@ int FileManager::loadDictKeys(const char *protocol, uint8_t (*keys)[6], int maxK
             }
         }
     }
-    std::sort(names.begin(), names.end(), [&cfg](const String &a, const String &b) {
-        return dictOrderIndex(cfg, a.c_str()) < dictOrderIndex(cfg, b.c_str());
+    std::stable_sort(names.begin(), names.end(), [&cfg](const String &a, const String &b) {
+        int ia = dictOrderIndex(cfg, a.c_str());
+        int ib = dictOrderIndex(cfg, b.c_str());
+        if (ia != ib) return ia < ib;
+        return strcmp(a.c_str(), b.c_str()) < 0;
     });
 
     int total = 0;
